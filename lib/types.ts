@@ -29,7 +29,8 @@ export type ComboRow = {
   attacks: number
   triples: number
   hr: number
+  hr_low: number
+  hr_high: number
   avg_stars: number
   avg_percent: number
-  defensive_score: number
 }

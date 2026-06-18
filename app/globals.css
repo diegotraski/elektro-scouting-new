@@ -4,13 +4,84 @@
 
 * { box-sizing: border-box; }
 html { color-scheme: dark; }
-body { background: #070A12; color: #EAF0FF; }
-.card { @apply rounded-2xl border border-line bg-panel/90 shadow-xl shadow-black/20; }
-.input { @apply rounded-xl border border-line bg-soft px-3 py-2 text-sm text-white outline-none focus:border-accent; }
-.input option { background: #0D1324; color: #EAF0FF; }
-.btn { @apply rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white hover:opacity-90; }
-.table th { @apply text-left text-xs uppercase tracking-wider text-slate-400; }
-.table td { @apply border-t border-line px-3 py-3 text-sm text-slate-100; }
-.table tbody tr:hover { background: rgba(255,255,255,0.04); }
-.recharts-text, .recharts-cartesian-axis-tick-value { fill: #CBD5E1 !important; }
-.recharts-tooltip-wrapper { color: #EAF0FF !important; }
+body {
+  background-color: #080A0F;
+  background-image:
+    radial-gradient(ellipse 900px 500px at 15% -5%, rgba(232,163,61,0.10), transparent),
+    radial-gradient(ellipse 700px 500px at 100% 10%, rgba(226,73,60,0.06), transparent);
+  color: #EDEEF2;
+  font-family: var(--font-body), sans-serif;
+}
+
+.font-display { font-family: var(--font-display), sans-serif; }
+.font-mono { font-family: var(--font-mono), monospace; }
+
+/* Textured grid backdrop, subtle "tactical map" feel */
+.tactical-grid {
+  background-image:
+    linear-gradient(rgba(232,163,61,0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(232,163,61,0.05) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+.card {
+  @apply rounded-xl border border-line bg-panel/80 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset,0_8px_24px_rgba(0,0,0,0.35)];
+}
+
+.card-edge {
+  position: relative;
+}
+.card-edge::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(232,163,61,0.5), transparent);
+  border-radius: 2px 2px 0 0;
+}
+
+.input {
+  @apply rounded-lg border border-line bg-soft px-3 py-2 text-sm text-white outline-none transition focus:border-gold/60 focus:ring-1 focus:ring-gold/30;
+}
+.input option { background: #11151D; color: #EDEEF2; }
+
+.btn {
+  @apply rounded-lg bg-gold px-4 py-2 text-sm font-semibold text-[#11151D] transition hover:bg-[#f0b35a] active:scale-[0.98];
+}
+.btn-ghost {
+  @apply rounded-lg border border-line bg-soft px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-steel/50 hover:bg-white/[0.04];
+}
+.btn-danger {
+  @apply rounded-lg border border-crimson/40 bg-crimson/10 px-4 py-2 text-sm font-semibold text-crimson transition hover:bg-crimson/20;
+}
+
+.label-eyebrow {
+  @apply font-mono text-[11px] font-medium uppercase tracking-[0.18em] text-steel;
+}
+
+.table th {
+  @apply text-left font-mono text-[11px] font-medium uppercase tracking-wider text-steel;
+}
+.table td {
+  @apply border-t border-line px-3 py-2.5 text-sm text-slate-100;
+}
+.table tbody tr { transition: background-color 0.15s ease; }
+.table tbody tr:hover { background: rgba(232,163,61,0.05); }
+
+.star-pip {
+  display: inline-block;
+  width: 0.85em;
+  text-align: center;
+}
+
+.recharts-text, .recharts-cartesian-axis-tick-value { fill: #7C8AA0 !important; font-family: var(--font-mono), monospace !important; font-size: 11px !important; }
+.recharts-tooltip-wrapper { color: #EDEEF2 !important; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #262C38; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #3a4150; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
