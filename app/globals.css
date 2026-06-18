@@ -9,3 +9,4 @@ body { background: #070A12; color: #EAF0FF; }
 .btn { @apply rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white hover:opacity-90; }
 .table th { @apply text-left text-xs uppercase tracking-wider text-slate-400; }
 .table td { @apply border-t border-line py-3 text-sm; }
+
