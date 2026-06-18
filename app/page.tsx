@@ -174,6 +174,37 @@ function makeGroup<T>(rows: Attack[], keyFn: (r: Attack) => string, labelKey: st
   }) as any[]
 }
 
+
+
+function makeComboGroup(rows: Attack[], keys: [string, (r: Attack) => string][], labelKey = 'combo') {
+  const map = new Map<string, Attack[]>()
+  rows.forEach((r) => {
+    const parts = keys.map(([_, fn]) => fn(r) || 'Unknown')
+    const key = parts.join('|||')
+    if (!map.has(key)) map.set(key, [])
+    map.get(key)!.push(r)
+  })
+
+  return Array.from(map.entries()).map(([key, items]) => {
+    const parts = key.split('|||')
+    const attacks = items.length
+    const triples = items.filter((x) => Number(x.stars) === 3).length
+    const avgStars = attacks ? items.reduce((s, x) => s + Number(x.stars || 0), 0) / attacks : 0
+    const avgPercent = attacks ? items.reduce((s, x) => s + Number(x.percent || 0), 0) / attacks : 0
+    const row: any = {
+      [labelKey]: parts.map(titleSafe).join(' + '),
+      attacks,
+      triples,
+      hr: +(triples / Math.max(attacks, 1) * 100).toFixed(1),
+      avg_stars: +avgStars.toFixed(2),
+      avg_percent: +avgPercent.toFixed(1),
+      defensive_score: +((100 - (triples / Math.max(attacks, 1) * 100)) * Math.log10(attacks || 1)).toFixed(2),
+    }
+    keys.forEach(([name], i) => row[name] = parts[i])
+    return row
+  })
+}
+
 function Distribution({ rows, label }: { rows: any[]; label: string }) {
   return (
     <div className="h-[280px]">
@@ -271,6 +302,25 @@ export default function Home() {
   const selectedTeamRows = teamFilter === 'all' ? filtered : filtered.filter((r) => r.attacker_team === teamFilter || r.defender_team === teamFilter)
   const selectedPlayerRows = playerFilter === 'all' ? filtered : filtered.filter((r) => r.attacker_name === playerFilter || r.defender_name === playerFilter)
   const selectedMatchRows = matchFilter === 'all' ? filtered.slice(0, 50) : filtered.filter((r) => r.match_id === matchFilter || r.link === matchFilter)
+
+  const teamAttackRows = teamFilter === 'all' ? filtered : filtered.filter((r) => r.attacker_team === teamFilter)
+  const teamDefenseRows = teamFilter === 'all' ? filtered : filtered.filter((r) => r.defender_team === teamFilter)
+  const playerAttackRows = playerFilter === 'all' ? filtered : filtered.filter((r) => r.attacker_name === playerFilter)
+  const playerDefenseRows = playerFilter === 'all' ? filtered : filtered.filter((r) => r.defender_name === playerFilter)
+
+  const teamArmyProfile = useMemo(() => makeComboGroup(teamAttackRows, [['army', r => r.army || '']], 'profile').filter(x => x.attacks >= MIN_ATTACKS).sort((a,b) => b.attacks - a.attacks), [teamAttackRows])
+  const teamBaseProfile = useMemo(() => makeComboGroup(teamAttackRows, [['base_style', r => r.base_style || ''], ['spell_tower', r => r.spell_tower || '']], 'profile').filter(x => x.attacks >= MIN_ATTACKS).sort((a,b) => b.attacks - a.attacks), [teamAttackRows])
+  const teamArmyBaseProfile = useMemo(() => makeComboGroup(teamAttackRows, [['army', r => r.army || ''], ['base_style', r => r.base_style || '']], 'profile').filter(x => x.attacks >= MIN_ATTACKS).sort((a,b) => b.attacks - a.attacks), [teamAttackRows])
+  const teamFullProfile = useMemo(() => makeComboGroup(teamAttackRows, [['army', r => r.army || ''], ['base_style', r => r.base_style || ''], ['spell_tower', r => r.spell_tower || '']], 'profile').filter(x => x.attacks >= 2).sort((a,b) => b.attacks - a.attacks), [teamAttackRows])
+  const teamDefenseProfile = useMemo(() => makeComboGroup(teamDefenseRows, [['base_style', r => r.base_style || ''], ['spell_tower', r => r.spell_tower || '']], 'profile').filter(x => x.attacks >= MIN_ATTACKS).sort((a,b) => b.defensive_score - a.defensive_score), [teamDefenseRows])
+  const teamReceivedArmies = useMemo(() => makeComboGroup(teamDefenseRows, [['army', r => r.army || '']], 'profile').filter(x => x.attacks >= MIN_ATTACKS).sort((a,b) => b.attacks - a.attacks), [teamDefenseRows])
+
+  const playerArmyProfile = useMemo(() => makeComboGroup(playerAttackRows, [['army', r => r.army || '']], 'profile').filter(x => x.attacks >= 2).sort((a,b) => b.attacks - a.attacks), [playerAttackRows])
+  const playerBaseProfile = useMemo(() => makeComboGroup(playerAttackRows, [['base_style', r => r.base_style || ''], ['spell_tower', r => r.spell_tower || '']], 'profile').filter(x => x.attacks >= 2).sort((a,b) => b.attacks - a.attacks), [playerAttackRows])
+  const playerArmyBaseProfile = useMemo(() => makeComboGroup(playerAttackRows, [['army', r => r.army || ''], ['base_style', r => r.base_style || '']], 'profile').filter(x => x.attacks >= 2).sort((a,b) => b.attacks - a.attacks), [playerAttackRows])
+  const playerFullProfile = useMemo(() => makeComboGroup(playerAttackRows, [['army', r => r.army || ''], ['base_style', r => r.base_style || ''], ['spell_tower', r => r.spell_tower || '']], 'profile').filter(x => x.attacks >= 1).sort((a,b) => b.attacks - a.attacks), [playerAttackRows])
+  const playerDefenseProfile = useMemo(() => makeComboGroup(playerDefenseRows, [['base_style', r => r.base_style || ''], ['spell_tower', r => r.spell_tower || '']], 'profile').filter(x => x.attacks >= 1).sort((a,b) => b.defensive_score - a.defensive_score), [playerDefenseRows])
+  const playerReceivedArmies = useMemo(() => makeComboGroup(playerDefenseRows, [['army', r => r.army || '']], 'profile').filter(x => x.attacks >= 1).sort((a,b) => b.attacks - a.attacks), [playerDefenseRows])
 
   const starDistribution = useMemo(() => [1, 2, 3].map((s) => ({ name: `${s} star`, value: filtered.filter((r) => Number(r.stars) === s).length })).filter(x => x.value > 0), [filtered])
   const baseDistribution = useMemo(() => baseStats.slice(0, 8).map((x) => ({ name: titleSafe(x.base), value: x.attacks })), [baseStats])
@@ -395,19 +445,107 @@ export default function Home() {
 
         {page === 'teams' && (
           <>
-            <section className="card p-4"><div className="grid gap-3 md:grid-cols-2"><select className="input" value={teamFilter} onChange={(e) => setTeamFilter(e.target.value)}><option value="all">Select a team</option>{teams.map((t) => <option key={t} value={t}>{t}</option>)}</select><button className="input hover:bg-white/10" onClick={() => setTeamFilter('all')}>Reset team</button></div></section>
-            <section className="grid gap-6 lg:grid-cols-2"><ChartCard title="Teams by attacking HR" subtitle="Best attacking teams in current filters." data={attackTeamStats.slice(0, 15)} yKey="team" xKey="hr" xName="HR %" /><ChartCard title="Teams by defensive score" subtitle="Best defending teams in current filters." data={defenseTeamStats.slice(0, 15)} yKey="team" xKey="defensive_score" xName="Defensive score" /></section>
-            <section className="grid gap-6 lg:grid-cols-2"><DataTable title="Team attack ranking" rows={attackTeamStats} columns={[['team','Team'],['attacks','Attacks'],['triples','Triples'],['hr','HR %'],['avg_stars','Avg stars'],['avg_percent','Avg %']]} /><DataTable title="Team defense ranking" rows={defenseTeamStats} columns={[['team','Team'],['attacks','Attacks defended'],['hr','HR conceded %'],['avg_stars','Avg stars conceded'],['avg_percent','Avg % conceded'],['defensive_score','Def score']]} /></section>
-            {teamFilter !== 'all' && <DataTable title={`${teamFilter} - recent attacks and defenses`} rows={selectedTeamRows.slice(0, 100)} columns={[['date','Date'],['attacker_name','Attacker'],['attacker_team','Atk team'],['army','Army'],['stars','Stars'],['percent','%'],['base_style','Base'],['spell_tower','Tower'],['defender_name','Defender'],['defender_team','Def team'],['competition','Competition']]} />}
+            <section className="card p-4">
+              <div className="grid gap-3 md:grid-cols-3">
+                <select className="input md:col-span-2" value={teamFilter} onChange={(e) => setTeamFilter(e.target.value)}>
+                  <option value="all">Select a team for scouting</option>
+                  {teams.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+                <button className="input hover:bg-white/10" onClick={() => setTeamFilter('all')}>Reset team</button>
+              </div>
+            </section>
+
+            {teamFilter === 'all' ? (
+              <>
+                <section className="grid gap-6 lg:grid-cols-2">
+                  <ChartCard title="Teams by attacking HR" subtitle="Best attacking teams in current filters." data={attackTeamStats.slice(0, 15)} yKey="team" xKey="hr" xName="HR %" />
+                  <ChartCard title="Teams by defensive score" subtitle="Best defending teams in current filters." data={defenseTeamStats.slice(0, 15)} yKey="team" xKey="defensive_score" xName="Defensive score" />
+                </section>
+                <section className="grid gap-6 lg:grid-cols-2">
+                  <DataTable title="Team attack ranking" rows={attackTeamStats} columns={[["team","Team"],["attacks","Attacks"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg stars"],["avg_percent","Avg %"]]} />
+                  <DataTable title="Team defense ranking" rows={defenseTeamStats} columns={[["team","Team"],["attacks","Attacks defended"],["hr","HR conceded %"],["avg_stars","Avg stars conceded"],["avg_percent","Avg % conceded"],["defensive_score","Def score"]]} />
+                </section>
+              </>
+            ) : (
+              <>
+                <section className="grid gap-4 md:grid-cols-4">
+                  <InsightCard label="Attacks analyzed" value={teamAttackRows.length} sub="Only attacks made by this team" />
+                  <InsightCard label="Attack HR" value={pct(teamAttackRows.length ? teamAttackRows.filter(r => Number(r.stars) === 3).length / teamAttackRows.length * 100 : 0)} sub="Triple rate attacking" />
+                  <InsightCard label="Avg stars" value={(teamAttackRows.length ? teamAttackRows.reduce((s,r)=>s+Number(r.stars||0),0)/teamAttackRows.length : 0).toFixed(2)} sub="Attacking average" />
+                  <InsightCard label="Defenses analyzed" value={teamDefenseRows.length} sub="Attacks received by this team" />
+                </section>
+
+                <section className="grid gap-6 lg:grid-cols-2">
+                  <DataTable title={`${teamFilter} · attacks used`} rows={teamArmyProfile} columns={[["profile","Army"],["attacks","Uses"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg stars"],["avg_percent","Avg %"]]} />
+                  <DataTable title={`${teamFilter} · bases attacked`} rows={teamBaseProfile} columns={[["profile","Base + spell tower"],["attacks","Attacks"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg stars"],["avg_percent","Avg %"]]} />
+                </section>
+
+                <section className="grid gap-6 lg:grid-cols-2">
+                  <DataTable title={`${teamFilter} · army vs base style`} rows={teamArmyBaseProfile} columns={[["profile","Army + base style"],["attacks","Attacks"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg stars"],["avg_percent","Avg %"]]} />
+                  <DataTable title={`${teamFilter} · full attack combinations`} rows={teamFullProfile} columns={[["profile","Army + base + spell"],["attacks","Attacks"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg stars"],["avg_percent","Avg %"]]} />
+                </section>
+
+                <section className="grid gap-6 lg:grid-cols-2">
+                  <DataTable title={`${teamFilter} · defensive base profile`} rows={teamDefenseProfile} columns={[["profile","Base + spell tower"],["attacks","Defenses"],["hr","HR conceded %"],["avg_stars","Avg stars conceded"],["avg_percent","Avg % conceded"],["defensive_score","Def score"]]} />
+                  <DataTable title={`${teamFilter} · armies received`} rows={teamReceivedArmies} columns={[["profile","Enemy army"],["attacks","Times received"],["triples","Triples conceded"],["hr","HR conceded %"],["avg_stars","Avg stars conceded"],["avg_percent","Avg % conceded"]]} />
+                </section>
+
+                <DataTable title={`${teamFilter} · recent attacks and defenses`} rows={selectedTeamRows.slice(0, 150)} columns={[["date","Date"],["attacker_name","Attacker"],["attacker_team","Atk team"],["army","Army"],["stars","Stars"],["percent","%"],["base_style","Base"],["spell_tower","Tower"],["defender_name","Defender"],["defender_team","Def team"],["competition","Competition"]]} />
+              </>
+            )}
           </>
         )}
 
         {page === 'players' && (
           <>
-            <section className="card p-4"><div className="grid gap-3 md:grid-cols-2"><select className="input" value={playerFilter} onChange={(e) => setPlayerFilter(e.target.value)}><option value="all">Select a player</option>{players.map((p) => <option key={p} value={p}>{p}</option>)}</select><button className="input hover:bg-white/10" onClick={() => setPlayerFilter('all')}>Reset player</button></div></section>
-            <section className="grid gap-6 lg:grid-cols-2"><ChartCard title="Attackers by HR" subtitle="Best attackers in current filters." data={playerAttackStats.slice(0, 15)} yKey="player" xKey="hr" xName="HR %" /><ChartCard title="Hardest players to triple" subtitle="Defensive value by player defended." data={playerDefenseStats.slice(0, 15)} yKey="player" xKey="defensive_score" xName="Defensive score" /></section>
-            <section className="grid gap-6 lg:grid-cols-2"><DataTable title="Player attack ranking" rows={playerAttackStats} columns={[['player','Player'],['attacks','Attacks'],['triples','Triples'],['hr','HR %'],['avg_stars','Avg stars'],['avg_percent','Avg %']]} /><DataTable title="Player defense ranking" rows={playerDefenseStats} columns={[['player','Player'],['attacks','Defenses'],['hr','HR conceded %'],['avg_stars','Avg stars conceded'],['avg_percent','Avg % conceded'],['defensive_score','Def score']]} /></section>
-            {playerFilter !== 'all' && <DataTable title={`${playerFilter} - recent history`} rows={selectedPlayerRows.slice(0, 100)} columns={[['date','Date'],['attacker_name','Attacker'],['attacker_team','Atk team'],['army','Army'],['stars','Stars'],['percent','%'],['base_style','Base'],['spell_tower','Tower'],['defender_name','Defender'],['defender_team','Def team'],['competition','Competition']]} />}
+            <section className="card p-4">
+              <div className="grid gap-3 md:grid-cols-3">
+                <select className="input md:col-span-2" value={playerFilter} onChange={(e) => setPlayerFilter(e.target.value)}>
+                  <option value="all">Select a player for scouting</option>
+                  {players.map((p) => <option key={p} value={p}>{p}</option>)}
+                </select>
+                <button className="input hover:bg-white/10" onClick={() => setPlayerFilter('all')}>Reset player</button>
+              </div>
+            </section>
+
+            {playerFilter === 'all' ? (
+              <>
+                <section className="grid gap-6 lg:grid-cols-2">
+                  <ChartCard title="Attackers by HR" subtitle="Best attackers in current filters." data={playerAttackStats.slice(0, 15)} yKey="player" xKey="hr" xName="HR %" />
+                  <ChartCard title="Hardest players to triple" subtitle="Defensive value by player defended." data={playerDefenseStats.slice(0, 15)} yKey="player" xKey="defensive_score" xName="Defensive score" />
+                </section>
+                <section className="grid gap-6 lg:grid-cols-2">
+                  <DataTable title="Player attack ranking" rows={playerAttackStats} columns={[["player","Player"],["attacks","Attacks"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg stars"],["avg_percent","Avg %"]]} />
+                  <DataTable title="Player defense ranking" rows={playerDefenseStats} columns={[["player","Player"],["attacks","Defenses"],["hr","HR conceded %"],["avg_stars","Avg stars conceded"],["avg_percent","Avg % conceded"],["defensive_score","Def score"]]} />
+                </section>
+              </>
+            ) : (
+              <>
+                <section className="grid gap-4 md:grid-cols-4">
+                  <InsightCard label="Attacks analyzed" value={playerAttackRows.length} sub="Only attacks made by this player" />
+                  <InsightCard label="Attack HR" value={pct(playerAttackRows.length ? playerAttackRows.filter(r => Number(r.stars) === 3).length / playerAttackRows.length * 100 : 0)} sub="Triple rate attacking" />
+                  <InsightCard label="Avg stars" value={(playerAttackRows.length ? playerAttackRows.reduce((s,r)=>s+Number(r.stars||0),0)/playerAttackRows.length : 0).toFixed(2)} sub="Attacking average" />
+                  <InsightCard label="Defenses analyzed" value={playerDefenseRows.length} sub="Attacks received by this player" />
+                </section>
+
+                <section className="grid gap-6 lg:grid-cols-2">
+                  <DataTable title={`${playerFilter} · attacks used`} rows={playerArmyProfile} columns={[["profile","Army"],["attacks","Uses"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg stars"],["avg_percent","Avg %"]]} />
+                  <DataTable title={`${playerFilter} · bases attacked`} rows={playerBaseProfile} columns={[["profile","Base + spell tower"],["attacks","Attacks"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg stars"],["avg_percent","Avg %"]]} />
+                </section>
+
+                <section className="grid gap-6 lg:grid-cols-2">
+                  <DataTable title={`${playerFilter} · army vs base style`} rows={playerArmyBaseProfile} columns={[["profile","Army + base style"],["attacks","Attacks"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg stars"],["avg_percent","Avg %"]]} />
+                  <DataTable title={`${playerFilter} · full attack combinations`} rows={playerFullProfile} columns={[["profile","Army + base + spell"],["attacks","Attacks"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg stars"],["avg_percent","Avg %"]]} />
+                </section>
+
+                <section className="grid gap-6 lg:grid-cols-2">
+                  <DataTable title={`${playerFilter} · defensive base profile`} rows={playerDefenseProfile} columns={[["profile","Base + spell tower"],["attacks","Defenses"],["hr","HR conceded %"],["avg_stars","Avg stars conceded"],["avg_percent","Avg % conceded"],["defensive_score","Def score"]]} />
+                  <DataTable title={`${playerFilter} · armies received`} rows={playerReceivedArmies} columns={[["profile","Enemy army"],["attacks","Times received"],["triples","Triples conceded"],["hr","HR conceded %"],["avg_stars","Avg stars conceded"],["avg_percent","Avg % conceded"]]} />
+                </section>
+
+                <DataTable title={`${playerFilter} · recent history`} rows={selectedPlayerRows.slice(0, 150)} columns={[["date","Date"],["attacker_name","Attacker"],["attacker_team","Atk team"],["army","Army"],["stars","Stars"],["percent","%"],["base_style","Base"],["spell_tower","Tower"],["defender_name","Defender"],["defender_team","Def team"],["competition","Competition"]]} />
+              </>
+            )}
           </>
         )}
 
