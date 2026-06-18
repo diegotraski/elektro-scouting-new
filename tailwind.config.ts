@@ -1,31 +1,30 @@
-{
-  "name": "elektro-scout-next",
-  "version": "1.0.0",
-  "private": true,
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint"
+import type { Config } from 'tailwindcss'
+
+const config: Config = {
+  content: ['./app/**/*.{js,ts,jsx,tsx}', './components/**/*.{js,ts,jsx,tsx}'],
+  theme: {
+    extend: {
+      colors: {
+        bg: '#080A0F',
+        panel: '#11151D',
+        soft: '#171C26',
+        line: '#262C38',
+        gold: '#E8A33D',
+        crimson: '#E2493C',
+        forest: '#3FA66E',
+        steel: '#7C8AA0',
+      },
+      fontFamily: {
+        display: ['var(--font-display)'],
+        mono: ['var(--font-mono)'],
+        body: ['var(--font-body)'],
+      },
+      backgroundImage: {
+        'grid-pattern':
+          'linear-gradient(rgba(232,163,61,0.045) 1px, transparent 1px), linear-gradient(90deg, rgba(232,163,61,0.045) 1px, transparent 1px)',
+      },
+    },
   },
-  "dependencies": {
-    "@supabase/supabase-js": "^2.45.4",
-    "lucide-react": "^0.468.0",
-    "next": "14.2.5",
-    "papaparse": "^5.4.1",
-    "react": "18.3.1",
-    "react-dom": "18.3.1",
-    "recharts": "^2.12.7",
-    "xlsx": "^0.18.5"
-  },
-  "devDependencies": {
-    "@types/node": "^20",
-    "@types/papaparse": "^5.3.15",
-    "@types/react": "^18",
-    "@types/react-dom": "^18",
-    "autoprefixer": "^10.4.20",
-    "postcss": "^8.4.47",
-    "tailwindcss": "^3.4.13",
-    "typescript": "^5.6.3"
-  }
+  plugins: [],
 }
+export default config
