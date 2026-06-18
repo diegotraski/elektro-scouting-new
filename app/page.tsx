@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Attack } from '@/lib/types'
-import { comboStats, filteredAttacks, title, wilsonInterval } from '@/lib/analytics'
+import { comboStats, filteredAttacks, title } from '@/lib/analytics'
 import {
   BarChart,
   Bar,
@@ -19,7 +19,6 @@ import {
   Pie,
   Cell,
   Legend,
-  ErrorBar,
 } from 'recharts'
 import {
   Upload,
@@ -33,18 +32,16 @@ import {
   Percent,
   RefreshCw,
   Search,
-  Flame,
   Table2,
-  BarChart3,
   Lock,
   Crosshair,
-  ChevronRight,
+  ChevronDown,
   AlertTriangle,
 } from 'lucide-react'
 import * as XLSX from 'xlsx'
 
-const MIN_ATTACKS = 5
 const PALETTE = ['#E8A33D', '#3FA66E', '#E2493C', '#7C8AA0', '#C9844A', '#5FB8D6', '#A86CD9', '#D6C24A']
+const PAGE_SIZE_STEPS = [5, 10, 20, Infinity]
 
 type Page = 'overview' | 'combos' | 'teams' | 'players' | 'matches' | 'data'
 
@@ -62,9 +59,8 @@ function pct(n: number) {
   return `${n.toFixed(1)}%`
 }
 
-/** Renders a hit-rate value with its sample size, so a glance always carries reliability context. */
+/** Renders a hit-rate value together with its sample size, so reliability context is always visible at a glance. */
 function HRWithSample({ hr, n }: { hr: number; n: number }) {
-  const low = n > 0 ? 'text-steel' : 'text-steel'
   return (
     <span className="inline-flex items-baseline gap-1.5">
       <span className="font-mono font-semibold">{hr}%</span>
@@ -136,6 +132,40 @@ function PageButton({ active, children, onClick }: any) {
   )
 }
 
+/** Shared tooltip style for Recharts so text stays legible (light text) on the dark panel background. */
+const tooltipStyle = {
+  background: '#11151D',
+  border: '1px solid #262C38',
+  color: '#EDEEF2',
+  borderRadius: 8,
+  fontFamily: 'var(--font-mono)',
+  fontSize: 12,
+}
+const tooltipLabelStyle = { color: '#EDEEF2' }
+const tooltipItemStyle = { color: '#EDEEF2' }
+
+/** "Show more" control used under rankings/charts: starts small, expands in steps, with an explicit step count visible. */
+function ShowMoreControl({ visibleCount, total, onExpand }: { visibleCount: number; total: number; onExpand: () => void }) {
+  if (visibleCount >= total) return null
+  const nextStep = PAGE_SIZE_STEPS.find((s) => s > visibleCount) ?? Infinity
+  const nextLabel = nextStep === Infinity ? 'Show all' : `Show ${Math.min(nextStep, total)}`
+  return (
+    <button onClick={onExpand} className="btn-ghost mt-3 flex w-full items-center justify-center gap-2 text-xs">
+      <ChevronDown className="h-3.5 w-3.5" /> {nextLabel} <span className="text-steel">({visibleCount} / {total})</span>
+    </button>
+  )
+}
+
+function useExpandable(total: number) {
+  const [count, setCount] = useState(PAGE_SIZE_STEPS[0])
+  useEffect(() => { setCount(PAGE_SIZE_STEPS[0]) }, [total])
+  const expand = () => {
+    const next = PAGE_SIZE_STEPS.find((s) => s > count) ?? total
+    setCount(next === Infinity ? total : next)
+  }
+  return { count: Math.min(count, total), expand }
+}
+
 function toDateString(value: any) {
   if (!value) return ''
   if (typeof value === 'number') {
@@ -189,7 +219,7 @@ function getCellClass(value?: number | null) {
   return 'bg-crimson/20 text-crimson border-crimson/30'
 }
 
-function makeGroup<T>(rows: Attack[], keyFn: (r: Attack) => string, labelKey: string) {
+function makeGroup(rows: Attack[], keyFn: (r: Attack) => string, labelKey: string) {
   const map = new Map<string, Attack[]>()
   rows.forEach((r) => {
     const key = keyFn(r) || 'Unknown'
@@ -201,14 +231,11 @@ function makeGroup<T>(rows: Attack[], keyFn: (r: Attack) => string, labelKey: st
     const triples = items.filter((x) => Number(x.stars) === 3).length
     const avgStars = attacks ? items.reduce((s, x) => s + Number(x.stars || 0), 0) / attacks : 0
     const avgPercent = attacks ? items.reduce((s, x) => s + Number(x.percent || 0), 0) / attacks : 0
-    const [hrLow, hrHigh] = wilsonInterval(triples, attacks)
     return {
       [labelKey]: name,
       attacks,
       triples,
       hr: +(triples / Math.max(attacks, 1) * 100).toFixed(1),
-      hr_low: hrLow,
-      hr_high: hrHigh,
       avg_stars: +avgStars.toFixed(2),
       avg_percent: +avgPercent.toFixed(1),
     }
@@ -230,14 +257,11 @@ function makeComboGroup(rows: Attack[], keys: [string, (r: Attack) => string][],
     const triples = items.filter((x) => Number(x.stars) === 3).length
     const avgStars = attacks ? items.reduce((s, x) => s + Number(x.stars || 0), 0) / attacks : 0
     const avgPercent = attacks ? items.reduce((s, x) => s + Number(x.percent || 0), 0) / attacks : 0
-    const [hrLow, hrHigh] = wilsonInterval(triples, attacks)
     const row: any = {
       [labelKey]: parts.map(titleSafe).join(' + '),
       attacks,
       triples,
       hr: +(triples / Math.max(attacks, 1) * 100).toFixed(1),
-      hr_low: hrLow,
-      hr_high: hrHigh,
       avg_stars: +avgStars.toFixed(2),
       avg_percent: +avgPercent.toFixed(1),
     }
@@ -254,8 +278,8 @@ function Distribution({ rows }: { rows: any[] }) {
           <Pie data={rows} dataKey="value" nameKey="name" outerRadius={88} innerRadius={50} paddingAngle={2} stroke="#080A0F" strokeWidth={2}>
             {rows.map((_, idx) => <Cell key={idx} fill={PALETTE[idx % PALETTE.length]} />)}
           </Pie>
-          <Tooltip contentStyle={{ background: '#11151D', border: '1px solid #262C38', color: '#EDEEF2', borderRadius: 8, fontFamily: 'var(--font-mono)', fontSize: 12 }} />
-          <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'var(--font-mono)' }} />
+          <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} />
+          <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: '#EDEEF2' }} />
         </PieChart>
       </ResponsiveContainer>
     </div>
@@ -320,21 +344,21 @@ export default function Home() {
   const uniqueTeams = new Set(filtered.flatMap((r) => [r.attacker_team, r.defender_team]).filter(Boolean)).size
   const uniquePlayers = new Set(filtered.flatMap((r) => [r.attacker_tag, r.defender_tag]).filter(Boolean)).size
 
-  const combos = useMemo(() => comboStats(filtered, MIN_ATTACKS), [filtered])
-  // Ranked by the lower bound of the 95% Wilson interval: a combo only ranks as
-  // "reliably hard to triple" if we're confident about it even in the worst case,
-  // not just because it happened to concede zero triples on a handful of attacks.
+  // No hard minimum-sample cutoff: every combo/team/player that appears in the
+  // filtered data shows up. Sample size (n=) is always shown next to HR so low-sample
+  // rows are visible but clearly flagged, instead of being silently hidden.
+  const combos = useMemo(() => comboStats(filtered, 0), [filtered])
   const rankingHR = useMemo(() => [...combos].sort((a, b) => b.hr - a.hr), [combos])
-  const rankingReliableDefense = useMemo(() => [...combos].sort((a, b) => a.hr_low - b.hr_low), [combos])
+  const rankingReliableDefense = useMemo(() => [...combos].sort((a, b) => a.hr - b.hr), [combos])
   const rankingStars = useMemo(() => [...combos].sort((a, b) => a.avg_stars - b.avg_stars), [combos])
 
-  const attackTeamStats = useMemo(() => makeGroup(filtered, (r) => r.attacker_team || '', 'team').filter(x => x.attacks >= MIN_ATTACKS).sort((a, b) => b.hr - a.hr), [filtered])
-  const defenseTeamStats = useMemo(() => makeGroup(filtered, (r) => r.defender_team || '', 'team').filter(x => x.attacks >= MIN_ATTACKS).sort((a, b) => a.hr_low - b.hr_low), [filtered])
-  const playerAttackStats = useMemo(() => makeGroup(filtered, (r) => r.attacker_name || '', 'player').filter(x => x.attacks >= MIN_ATTACKS).sort((a, b) => b.hr - a.hr), [filtered])
-  const playerDefenseStats = useMemo(() => makeGroup(filtered, (r) => r.defender_name || '', 'player').filter(x => x.attacks >= MIN_ATTACKS).sort((a, b) => a.hr_low - b.hr_low), [filtered])
-  const armyStats = useMemo(() => makeGroup(filtered, (r) => r.army || '', 'army').filter(x => x.attacks >= MIN_ATTACKS).sort((a, b) => b.attacks - a.attacks), [filtered])
-  const baseStats = useMemo(() => makeGroup(filtered, (r) => r.base_style || '', 'base').filter(x => x.attacks >= MIN_ATTACKS).sort((a, b) => a.hr_low - b.hr_low), [filtered])
-  const spellStats = useMemo(() => makeGroup(filtered, (r) => r.spell_tower || '', 'spell').filter(x => x.attacks >= MIN_ATTACKS).sort((a, b) => a.hr_low - b.hr_low), [filtered])
+  const attackTeamStats = useMemo(() => makeGroup(filtered, (r) => r.attacker_team || '', 'team').sort((a, b) => b.hr - a.hr), [filtered])
+  const defenseTeamStats = useMemo(() => makeGroup(filtered, (r) => r.defender_team || '', 'team').sort((a, b) => a.hr - b.hr), [filtered])
+  const playerAttackStats = useMemo(() => makeGroup(filtered, (r) => r.attacker_name || '', 'player').sort((a, b) => b.hr - a.hr), [filtered])
+  const playerDefenseStats = useMemo(() => makeGroup(filtered, (r) => r.defender_name || '', 'player').sort((a, b) => a.hr - b.hr), [filtered])
+  const armyStats = useMemo(() => makeGroup(filtered, (r) => r.army || '', 'army').sort((a, b) => b.attacks - a.attacks), [filtered])
+  const baseStats = useMemo(() => makeGroup(filtered, (r) => r.base_style || '', 'base').sort((a, b) => a.hr - b.hr), [filtered])
+  const spellStats = useMemo(() => makeGroup(filtered, (r) => r.spell_tower || '', 'spell').sort((a, b) => a.hr - b.hr), [filtered])
 
   const heatmap = useMemo(() => {
     const baseList = Array.from(new Set(combos.map((c) => c.base_style))).sort()
@@ -352,23 +376,47 @@ export default function Home() {
   const playerAttackRows = playerFilter === 'all' ? filtered : filtered.filter((r) => r.attacker_name === playerFilter)
   const playerDefenseRows = playerFilter === 'all' ? filtered : filtered.filter((r) => r.defender_name === playerFilter)
 
-  const teamArmyProfile = useMemo(() => makeComboGroup(teamAttackRows, [['army', r => r.army || '']], 'profile').filter(x => x.attacks >= MIN_ATTACKS).sort((a,b) => b.attacks - a.attacks), [teamAttackRows])
-  const teamBaseProfile = useMemo(() => makeComboGroup(teamAttackRows, [['base_style', r => r.base_style || ''], ['spell_tower', r => r.spell_tower || '']], 'profile').filter(x => x.attacks >= MIN_ATTACKS).sort((a,b) => b.attacks - a.attacks), [teamAttackRows])
-  const teamArmyBaseProfile = useMemo(() => makeComboGroup(teamAttackRows, [['army', r => r.army || ''], ['base_style', r => r.base_style || '']], 'profile').filter(x => x.attacks >= MIN_ATTACKS).sort((a,b) => b.attacks - a.attacks), [teamAttackRows])
-  const teamFullProfile = useMemo(() => makeComboGroup(teamAttackRows, [['army', r => r.army || ''], ['base_style', r => r.base_style || ''], ['spell_tower', r => r.spell_tower || '']], 'profile').filter(x => x.attacks >= 2).sort((a,b) => b.attacks - a.attacks), [teamAttackRows])
-  const teamDefenseProfile = useMemo(() => makeComboGroup(teamDefenseRows, [['base_style', r => r.base_style || ''], ['spell_tower', r => r.spell_tower || '']], 'profile').filter(x => x.attacks >= MIN_ATTACKS).sort((a,b) => a.hr_low - b.hr_low), [teamDefenseRows])
-  const teamReceivedArmies = useMemo(() => makeComboGroup(teamDefenseRows, [['army', r => r.army || '']], 'profile').filter(x => x.attacks >= MIN_ATTACKS).sort((a,b) => b.attacks - a.attacks), [teamDefenseRows])
+  // Team scouting: what they attack with, what base styles give them trouble, and what they attack those bases with.
+  const teamArmyProfile = useMemo(() => makeComboGroup(teamAttackRows, [['army', r => r.army || '']], 'profile').sort((a,b) => b.attacks - a.attacks), [teamAttackRows])
+  const teamBaseProfile = useMemo(() => makeComboGroup(teamAttackRows, [['base_style', r => r.base_style || ''], ['spell_tower', r => r.spell_tower || '']], 'profile').sort((a,b) => b.attacks - a.attacks), [teamAttackRows])
+  const teamArmyBaseProfile = useMemo(() => makeComboGroup(teamAttackRows, [['army', r => r.army || ''], ['base_style', r => r.base_style || '']], 'profile').sort((a,b) => b.attacks - a.attacks), [teamAttackRows])
+  const teamFullProfile = useMemo(() => makeComboGroup(teamAttackRows, [['army', r => r.army || ''], ['base_style', r => r.base_style || ''], ['spell_tower', r => r.spell_tower || '']], 'profile').sort((a,b) => b.attacks - a.attacks), [teamAttackRows])
+  // Defensive base styles that most often beat this team (highest HR conceded = base styles that give them trouble).
+  const teamDefenseProfile = useMemo(() => makeComboGroup(teamDefenseRows, [['base_style', r => r.base_style || ''], ['spell_tower', r => r.spell_tower || '']], 'profile').sort((a,b) => b.hr - a.hr), [teamDefenseRows])
+  const teamReceivedArmies = useMemo(() => makeComboGroup(teamDefenseRows, [['army', r => r.army || '']], 'profile').sort((a,b) => b.attacks - a.attacks), [teamDefenseRows])
+  // For each base style this team struggles with, which armies are typically used against them.
+  const teamWeakBaseToArmy = useMemo(() => {
+    const struggleBases = new Set(teamDefenseProfile.filter(b => b.attacks >= 2).slice(0, 5).map(b => b.base_style))
+    const rowsAgainstWeakBases = teamDefenseRows.filter(r => struggleBases.has(r.base_style || ''))
+    return makeComboGroup(rowsAgainstWeakBases, [['base_style', r => r.base_style || ''], ['army', r => r.army || '']], 'profile').sort((a,b) => b.attacks - a.attacks)
+  }, [teamDefenseRows, teamDefenseProfile])
 
-  const playerArmyProfile = useMemo(() => makeComboGroup(playerAttackRows, [['army', r => r.army || '']], 'profile').filter(x => x.attacks >= 2).sort((a,b) => b.attacks - a.attacks), [playerAttackRows])
-  const playerBaseProfile = useMemo(() => makeComboGroup(playerAttackRows, [['base_style', r => r.base_style || ''], ['spell_tower', r => r.spell_tower || '']], 'profile').filter(x => x.attacks >= 2).sort((a,b) => b.attacks - a.attacks), [playerAttackRows])
-  const playerArmyBaseProfile = useMemo(() => makeComboGroup(playerAttackRows, [['army', r => r.army || ''], ['base_style', r => r.base_style || '']], 'profile').filter(x => x.attacks >= 2).sort((a,b) => b.attacks - a.attacks), [playerAttackRows])
-  const playerFullProfile = useMemo(() => makeComboGroup(playerAttackRows, [['army', r => r.army || ''], ['base_style', r => r.base_style || ''], ['spell_tower', r => r.spell_tower || '']], 'profile').filter(x => x.attacks >= 1).sort((a,b) => b.attacks - a.attacks), [playerAttackRows])
-  const playerDefenseProfile = useMemo(() => makeComboGroup(playerDefenseRows, [['base_style', r => r.base_style || ''], ['spell_tower', r => r.spell_tower || '']], 'profile').filter(x => x.attacks >= 1).sort((a,b) => a.hr_low - b.hr_low), [playerDefenseRows])
-  const playerReceivedArmies = useMemo(() => makeComboGroup(playerDefenseRows, [['army', r => r.army || '']], 'profile').filter(x => x.attacks >= 1).sort((a,b) => b.attacks - a.attacks), [playerDefenseRows])
+  const playerArmyProfile = useMemo(() => makeComboGroup(playerAttackRows, [['army', r => r.army || '']], 'profile').sort((a,b) => b.attacks - a.attacks), [playerAttackRows])
+  const playerBaseProfile = useMemo(() => makeComboGroup(playerAttackRows, [['base_style', r => r.base_style || ''], ['spell_tower', r => r.spell_tower || '']], 'profile').sort((a,b) => b.attacks - a.attacks), [playerAttackRows])
+  const playerArmyBaseProfile = useMemo(() => makeComboGroup(playerAttackRows, [['army', r => r.army || ''], ['base_style', r => r.base_style || '']], 'profile').sort((a,b) => b.attacks - a.attacks), [playerAttackRows])
+  const playerFullProfile = useMemo(() => makeComboGroup(playerAttackRows, [['army', r => r.army || ''], ['base_style', r => r.base_style || ''], ['spell_tower', r => r.spell_tower || '']], 'profile').sort((a,b) => b.attacks - a.attacks), [playerAttackRows])
+  const playerDefenseProfile = useMemo(() => makeComboGroup(playerDefenseRows, [['base_style', r => r.base_style || ''], ['spell_tower', r => r.spell_tower || '']], 'profile').sort((a,b) => b.hr - a.hr), [playerDefenseRows])
+  const playerReceivedArmies = useMemo(() => makeComboGroup(playerDefenseRows, [['army', r => r.army || '']], 'profile').sort((a,b) => b.attacks - a.attacks), [playerDefenseRows])
 
-  const starDistribution = useMemo(() => [1, 2, 3].map((s) => ({ name: `${s} star`, value: filtered.filter((r) => Number(r.stars) === s).length })).filter(x => x.value > 0), [filtered])
-  const baseDistribution = useMemo(() => baseStats.slice(0, 8).map((x) => ({ name: titleSafe(x.base), value: x.attacks })), [baseStats])
-  const spellDistribution = useMemo(() => spellStats.slice(0, 8).map((x) => ({ name: titleSafe(x.spell), value: x.attacks })), [spellStats])
+  const starDistribution = useMemo(() => [1, 2, 3].map((s) => ({ name: `${s} Star`, value: filtered.filter((r) => Number(r.stars) === s).length })).filter(x => x.value > 0), [filtered])
+  const baseDistribution = useMemo(() => baseStats.slice().sort((a,b)=>b.attacks-a.attacks).slice(0, 8).map((x) => ({ name: titleSafe(x.base), value: x.attacks })), [baseStats])
+  const spellDistribution = useMemo(() => spellStats.slice().sort((a,b)=>b.attacks-a.attacks).slice(0, 8).map((x) => ({ name: titleSafe(x.spell), value: x.attacks })), [spellStats])
+
+  // Meta evolution over time: monthly hit rate trend across the whole filtered dataset.
+  const metaTrend = useMemo(() => {
+    const byMonth = new Map<string, Attack[]>()
+    filtered.forEach(r => {
+      const month = (r.date || '').slice(0, 7)
+      if (!month) return
+      if (!byMonth.has(month)) byMonth.set(month, [])
+      byMonth.get(month)!.push(r)
+    })
+    return Array.from(byMonth.entries()).sort(([a],[b]) => a.localeCompare(b)).map(([month, items]) => {
+      const attacks = items.length
+      const tr = items.filter(x => Number(x.stars) === 3).length
+      return { month, attacks, hr: +(tr / Math.max(attacks,1) * 100).toFixed(1) }
+    })
+  }, [filtered])
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -395,6 +443,15 @@ export default function Home() {
     setBaseFilter('all'); setSpellFilter('all'); setTeamFilter('all'); setPlayerFilter('all'); setMatchFilter('all'); setDateFrom(''); setDateTo(''); setQuery('')
   }
 
+  const rankingHRExp = useExpandable(rankingHR.length)
+  const rankingDefExp = useExpandable(rankingReliableDefense.length)
+  const rankingStarsExp = useExpandable(rankingStars.length)
+  const attackTeamExp = useExpandable(attackTeamStats.length)
+  const defenseTeamExp = useExpandable(defenseTeamStats.length)
+  const playerAttackExp = useExpandable(playerAttackStats.length)
+  const playerDefenseExp = useExpandable(playerDefenseStats.length)
+  const comboTableExp = useExpandable(rankingReliableDefense.length)
+
   return (
     <main className="min-h-screen bg-bg p-4 text-slate-100 md:p-6">
       <div className="mx-auto max-w-7xl space-y-6">
@@ -409,15 +466,15 @@ export default function Home() {
                 Elektro <span className="text-gold">Scout</span>
               </h1>
               <p className="mt-3 max-w-xl text-sm leading-relaxed text-steel">
-                Inteligencia de guerra de Clash of Clans: rendimiento por equipo, jugador, ejército y combinación de base + torre de hechizos.
+                Clash of Clans competitive intelligence: performance by team, player, army, and base style + spell tower combination.
               </p>
             </div>
             <div className="flex gap-2.5">
               <button className="btn-ghost flex items-center gap-2" onClick={loadData}>
-                <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /> Actualizar
+                <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /> Refresh
               </button>
               <label className="btn flex cursor-pointer items-center gap-2">
-                <Upload className="h-4 w-4" />{uploading ? 'Actualizando...' : 'Subir Excel'}
+                <Upload className="h-4 w-4" />{uploading ? 'Updating...' : 'Upload Excel'}
                 <input type="file" accept=".xlsx,.xls" onChange={handleFile} className="hidden" />
               </label>
             </div>
@@ -425,44 +482,44 @@ export default function Home() {
         </header>
 
         <nav className="flex flex-wrap gap-2">
-          <PageButton active={page === 'overview'} onClick={() => setPage('overview')}>Resumen</PageButton>
-          <PageButton active={page === 'combos'} onClick={() => setPage('combos')}>Mapa de combos</PageButton>
-          <PageButton active={page === 'teams'} onClick={() => setPage('teams')}>Equipos</PageButton>
-          <PageButton active={page === 'players'} onClick={() => setPage('players')}>Jugadores</PageButton>
-          <PageButton active={page === 'matches'} onClick={() => setPage('matches')}>Partidas</PageButton>
-          <PageButton active={page === 'data'} onClick={() => setPage('data')}>Datos</PageButton>
+          <PageButton active={page === 'overview'} onClick={() => setPage('overview')}>Overview</PageButton>
+          <PageButton active={page === 'combos'} onClick={() => setPage('combos')}>Combo Map</PageButton>
+          <PageButton active={page === 'teams'} onClick={() => setPage('teams')}>Teams</PageButton>
+          <PageButton active={page === 'players'} onClick={() => setPage('players')}>Players</PageButton>
+          <PageButton active={page === 'matches'} onClick={() => setPage('matches')}>Matches</PageButton>
+          <PageButton active={page === 'data'} onClick={() => setPage('data')}>Data</PageButton>
         </nav>
 
         <section className="card p-4">
           <div className="mb-3 flex items-center gap-2">
             <CalendarDays className="h-4 w-4 text-gold" />
-            <span className="label-eyebrow">Filtros globales</span>
+            <span className="label-eyebrow">Global Filters</span>
           </div>
           <div className="grid gap-3 md:grid-cols-4 lg:grid-cols-8">
             <div className="relative lg:col-span-2">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-steel" />
-              <input className="input w-full pl-9" placeholder="Buscar jugador, equipo, ejército..." value={query} onChange={(e) => setQuery(e.target.value)} />
+              <input className="input w-full pl-9" placeholder="Search player, team, army..." value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
             <select className="input" value={baseFilter} onChange={(e) => setBaseFilter(e.target.value)}>
-              <option value="all">Todas las bases</option>
+              <option value="all">All base styles</option>
               {bases.map((b) => <option key={b} value={b}>{titleSafe(b)}</option>)}
             </select>
             <select className="input" value={spellFilter} onChange={(e) => setSpellFilter(e.target.value)}>
-              <option value="all">Todas las torres</option>
+              <option value="all">All spell towers</option>
               {spells.map((s) => <option key={s} value={s}>{titleSafe(s)}</option>)}
             </select>
             <input type="date" className="input" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
             <input type="date" className="input" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
-            <button className="btn-ghost" onClick={clearFilters}>Limpiar filtros</button>
+            <button className="btn-ghost" onClick={clearFilters}>Clear filters</button>
           </div>
-          <p className="mt-3 font-mono text-[11px] text-steel">Rango disponible: {dateBounds.min || '—'} → {dateBounds.max || '—'}</p>
+          <p className="mt-3 font-mono text-[11px] text-steel">Available range: {dateBounds.min || '—'} → {dateBounds.max || '—'}</p>
         </section>
 
         <section className="grid gap-4 md:grid-cols-4">
-          <StatCard label="Ataques" value={loading ? '...' : total} sub={`${uniqueTeams} equipos · ${uniquePlayers} jugadores`} icon={Database} tone="gold" />
-          <StatCard label="Hit rate (triples)" value={`${hr}%`} sub={`${triples} triples de ${total} ataques`} icon={Target} tone="crimson" />
-          <StatCard label="Estrellas medias" value={avgStars} sub="Media de estrellas conseguidas" icon={Trophy} tone="gold" />
-          <StatCard label="Destrucción media" value={`${avgPercent}%`} sub="Media de % de destrucción" icon={Percent} tone="forest" />
+          <StatCard label="Attacks" value={loading ? '...' : total} sub={`${uniqueTeams} teams · ${uniquePlayers} players`} icon={Database} tone="gold" />
+          <StatCard label="Hit Rate (triples)" value={`${hr}%`} sub={`${triples} triples out of ${total} attacks`} icon={Target} tone="crimson" />
+          <StatCard label="Avg Stars" value={avgStars} sub="Average stars earned" icon={Trophy} tone="gold" />
+          <StatCard label="Avg Destruction" value={`${avgPercent}%`} sub="Average destruction %" icon={Percent} tone="forest" />
         </section>
 
         {page === 'overview' && (
@@ -470,24 +527,46 @@ export default function Home() {
             <section className="grid gap-4 md:grid-cols-4">
               <InsightCard
                 accent
-                label="Base más fiable en defensa"
+                label="Hardest Combo to Triple"
                 value={rankingReliableDefense[0]?.combo || '-'}
-                sub={rankingReliableDefense[0] ? `HR ${rankingReliableDefense[0].hr}% (IC95% ${rankingReliableDefense[0].hr_low}–${rankingReliableDefense[0].hr_high}%) · n=${rankingReliableDefense[0].attacks}` : ''}
+                sub={rankingReliableDefense[0] ? `HR ${rankingReliableDefense[0].hr}% · n=${rankingReliableDefense[0].attacks}` : ''}
               />
-              <InsightCard label="Menos estrellas concedidas" value={rankingStars[0]?.combo || '-'} sub={rankingStars[0] ? `${rankingStars[0].avg_stars} ⭐ de media · n=${rankingStars[0].attacks}` : ''} />
-              <InsightCard label="Ejército más usado" value={armyStats[0]?.army ? titleSafe(armyStats[0].army) : '-'} sub={armyStats[0] ? `${armyStats[0].attacks} ataques` : ''} />
-              <InsightCard label="Mejor equipo atacando" value={attackTeamStats[0]?.team || '-'} sub={attackTeamStats[0] ? `HR ${attackTeamStats[0].hr}% · n=${attackTeamStats[0].attacks}` : ''} />
+              <InsightCard label="Lowest Avg Stars Conceded" value={rankingStars[0]?.combo || '-'} sub={rankingStars[0] ? `${rankingStars[0].avg_stars} ⭐ avg · n=${rankingStars[0].attacks}` : ''} />
+              <InsightCard label="Most Used Army" value={armyStats.slice().sort((a,b)=>b.attacks-a.attacks)[0]?.army ? titleSafe(armyStats.slice().sort((a,b)=>b.attacks-a.attacks)[0].army) : '-'} sub={armyStats.length ? `${armyStats.slice().sort((a,b)=>b.attacks-a.attacks)[0].attacks} attacks` : ''} />
+              <InsightCard label="Best Attacking Team" value={attackTeamStats[0]?.team || '-'} sub={attackTeamStats[0] ? `HR ${attackTeamStats[0].hr}% · n=${attackTeamStats[0].attacks}` : ''} />
             </section>
 
             <section className="grid gap-6 lg:grid-cols-2">
-              <ChartCard title="Combos más vulnerables (HR)" subtitle={`Mayor HR = más fácil de triplear. Mínimo ${MIN_ATTACKS} ataques.`} data={rankingHR.slice(0, 12)} yKey="combo" xKey="hr" xName="HR %" color="#E2493C" />
-              <ChartCard title="Defensas más fiables" subtitle="Ordenado por el límite inferior del intervalo de confianza (95%), no solo por el HR puntual." data={rankingReliableDefense.slice(0, 12)} yKey="combo" xKey="hr_low" xName="HR mínimo fiable %" color="#3FA66E" />
+              <div>
+                <ChartCard title="Most Vulnerable Combos (HR)" subtitle="Higher HR = easier to triple. Every combo in the filtered data is included." data={rankingHR.slice(0, rankingHRExp.count)} yKey="combo" xKey="hr" xName="HR %" color="#E2493C" />
+                <ShowMoreControl visibleCount={rankingHRExp.count} total={rankingHR.length} onExpand={rankingHRExp.expand} />
+              </div>
+              <div>
+                <ChartCard title="Most Reliable Defenses" subtitle="Sorted by lowest HR conceded across all sample sizes." data={rankingReliableDefense.slice(0, rankingDefExp.count)} yKey="combo" xKey="hr" xName="HR %" color="#3FA66E" />
+                <ShowMoreControl visibleCount={rankingDefExp.count} total={rankingReliableDefense.length} onExpand={rankingDefExp.expand} />
+              </div>
+            </section>
+
+            <section className="card p-5">
+              <SectionLabel>Meta Evolution Over Time</SectionLabel>
+              <p className="mb-4 -mt-2 text-sm text-steel">Monthly hit rate trend across all attacks in the filtered dataset.</p>
+              <div className="h-[280px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={metaTrend} margin={{ left: 5, right: 15 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1E2530" />
+                    <XAxis dataKey="month" stroke="#7C8AA0" />
+                    <YAxis stroke="#7C8AA0" />
+                    <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} />
+                    <Bar dataKey="hr" name="HR %" fill="#E8A33D" radius={[6, 6, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
             </section>
 
             <section className="grid gap-6 lg:grid-cols-3">
-              <div className="card p-5"><SectionLabel>Distribución de estrellas</SectionLabel><Distribution rows={starDistribution} /></div>
-              <div className="card p-5"><SectionLabel>Volumen por estilo de base</SectionLabel><Distribution rows={baseDistribution} /></div>
-              <div className="card p-5"><SectionLabel>Volumen por torre de hechizos</SectionLabel><Distribution rows={spellDistribution} /></div>
+              <div className="card p-5"><SectionLabel>Star Distribution</SectionLabel><Distribution rows={starDistribution} /></div>
+              <div className="card p-5"><SectionLabel>Volume by Base Style</SectionLabel><Distribution rows={baseDistribution} /></div>
+              <div className="card p-5"><SectionLabel>Volume by Spell Tower</SectionLabel><Distribution rows={spellDistribution} /></div>
             </section>
           </>
         )}
@@ -497,14 +576,14 @@ export default function Home() {
             <section className="card p-5">
               <div className="mb-1 flex items-center gap-2">
                 <Shield className="h-4 w-4 text-gold" />
-                <h2 className="font-display text-lg font-semibold uppercase tracking-wide text-white">Mapa táctico de combos</h2>
+                <h2 className="font-display text-lg font-semibold uppercase tracking-wide text-white">Tactical Combo Map</h2>
               </div>
-              <p className="mb-4 text-sm text-steel">Verde = defensa sólida (difícil de triplear). Rojo = vulnerable. Cada celda muestra HR, muestra y estrellas medias.</p>
+              <p className="mb-4 text-sm text-steel">Green = solid defense (hard to triple). Red = vulnerable. Each cell shows HR, sample size, and average stars.</p>
               <div className="overflow-x-auto">
                 <table className="w-full border-separate border-spacing-2 text-sm">
                   <thead>
                     <tr>
-                      <th className="text-left font-mono text-[11px] uppercase tracking-wider text-steel">Estilo de base</th>
+                      <th className="text-left font-mono text-[11px] uppercase tracking-wider text-steel">Base Style</th>
                       {heatmap.spellList.map((s) => <th key={s} className="text-center font-mono text-[11px] uppercase tracking-wider text-steel">{titleSafe(s)}</th>)}
                     </tr>
                   </thead>
@@ -531,18 +610,24 @@ export default function Home() {
                 </table>
               </div>
               <p className="mt-4 flex items-center gap-1.5 font-mono text-[11px] text-steel">
-                <AlertTriangle className="h-3 w-3" /> Combos con menos de {MIN_ATTACKS} ataques no se muestran: la muestra es insuficiente para sacar conclusiones.
+                <AlertTriangle className="h-3 w-3" /> All combos in the filtered data are shown. Low sample sizes (small n) are less statistically reliable — check n= before drawing conclusions.
               </p>
             </section>
             <section className="grid gap-6 lg:grid-cols-2">
-              <ChartCard title="HR vs. tamaño de muestra" subtitle="Detecta combos con HR alto pero muestra poco fiable." data={combos} yKey="hr" xKey="attacks" xName="Ataques" scatter color="#E8A33D" />
-              <ChartCard title="Menor media de estrellas" subtitle="Menos estrellas de media suele indicar mejor valor defensivo." data={rankingStars.slice(0, 12)} yKey="combo" xKey="avg_stars" xName="Estrellas medias" color="#7C8AA0" />
+              <ChartCard title="HR vs. Sample Size" subtitle="Spot combos with a high HR but an unreliable (low) sample." data={combos} yKey="hr" xKey="attacks" xName="Attacks" scatter color="#E8A33D" />
+              <div>
+                <ChartCard title="Lowest Average Stars Conceded" subtitle="Lower average stars usually indicates better defensive value." data={rankingStars.slice(0, rankingStarsExp.count)} yKey="combo" xKey="avg_stars" xName="Avg Stars" color="#7C8AA0" />
+                <ShowMoreControl visibleCount={rankingStarsExp.count} total={rankingStars.length} onExpand={rankingStarsExp.expand} />
+              </div>
             </section>
-            <DataTable
-              title="Ranking completo de combos"
-              rows={rankingReliableDefense}
-              columns={[['combo','Combo'],['attacks','Ataques'],['triples','Triples'],['hr','HR %'],['hr_low','IC95% min'],['hr_high','IC95% max'],['avg_stars','⭐ media'],['avg_percent','% medio']]}
-            />
+            <div>
+              <DataTable
+                title="Full Combo Ranking"
+                rows={rankingReliableDefense.slice(0, comboTableExp.count)}
+                columns={[['combo','Combo'],['attacks','Attacks'],['triples','Triples'],['hr','HR %'],['avg_stars','Avg ⭐'],['avg_percent','Avg %']]}
+              />
+              <ShowMoreControl visibleCount={comboTableExp.count} total={rankingReliableDefense.length} onExpand={comboTableExp.expand} />
+            </div>
           </>
         )}
 
@@ -551,49 +636,63 @@ export default function Home() {
             <section className="card p-4">
               <div className="grid gap-3 md:grid-cols-3">
                 <select className="input md:col-span-2" value={teamFilter} onChange={(e) => setTeamFilter(e.target.value)}>
-                  <option value="all">Selecciona un equipo para scouting</option>
+                  <option value="all">Select a team to scout</option>
                   {teams.map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
-                <button className="btn-ghost" onClick={() => setTeamFilter('all')}>Quitar equipo</button>
+                <button className="btn-ghost" onClick={() => setTeamFilter('all')}>Clear team</button>
               </div>
             </section>
 
             {teamFilter === 'all' ? (
               <>
                 <section className="grid gap-6 lg:grid-cols-2">
-                  <ChartCard title="Equipos por HR atacando" subtitle="Mejores equipos atacando con los filtros actuales." data={attackTeamStats.slice(0, 15)} yKey="team" xKey="hr" xName="HR %" color="#E2493C" />
-                  <ChartCard title="Equipos por defensa fiable" subtitle="Ordenado por el límite inferior del IC95% del HR concedido." data={defenseTeamStats.slice(0, 15)} yKey="team" xKey="hr_low" xName="HR mínimo fiable %" color="#3FA66E" />
+                  <div>
+                    <ChartCard title="Teams by Attack HR" subtitle="Best attacking teams under the current filters." data={attackTeamStats.slice(0, attackTeamExp.count)} yKey="team" xKey="hr" xName="HR %" color="#E2493C" />
+                    <ShowMoreControl visibleCount={attackTeamExp.count} total={attackTeamStats.length} onExpand={attackTeamExp.expand} />
+                  </div>
+                  <div>
+                    <ChartCard title="Teams by Defensive Reliability" subtitle="Sorted by lowest HR conceded." data={defenseTeamStats.slice(0, defenseTeamExp.count)} yKey="team" xKey="hr" xName="HR %" color="#3FA66E" />
+                    <ShowMoreControl visibleCount={defenseTeamExp.count} total={defenseTeamStats.length} onExpand={defenseTeamExp.expand} />
+                  </div>
                 </section>
                 <section className="grid gap-6 lg:grid-cols-2">
-                  <DataTable title="Ranking de ataque por equipo" rows={attackTeamStats} columns={[["team","Equipo"],["attacks","Ataques"],["triples","Triples"],["hr","HR %"],["avg_stars","⭐ media"],["avg_percent","% medio"]]} />
-                  <DataTable title="Ranking de defensa por equipo" rows={defenseTeamStats} columns={[["team","Equipo"],["attacks","Defensas"],["hr","HR concedido %"],["hr_low","IC95% min"],["hr_high","IC95% max"],["avg_stars","⭐ media concedida"]]} />
+                  <DataTable title="Attack Ranking by Team" rows={attackTeamStats} columns={[["team","Team"],["attacks","Attacks"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg ⭐"],["avg_percent","Avg %"]]} />
+                  <DataTable title="Defense Ranking by Team" rows={defenseTeamStats} columns={[["team","Team"],["attacks","Defenses"],["hr","HR Conceded %"],["avg_stars","Avg ⭐ Conceded"],["avg_percent","Avg % Conceded"]]} />
                 </section>
               </>
             ) : (
               <>
                 <section className="grid gap-4 md:grid-cols-4">
-                  <InsightCard label="Ataques analizados" value={teamAttackRows.length} sub="Solo ataques realizados por este equipo" />
-                  <InsightCard label="HR atacando" value={pct(teamAttackRows.length ? teamAttackRows.filter(r => Number(r.stars) === 3).length / teamAttackRows.length * 100 : 0)} sub="Tasa de triples atacando" />
-                  <InsightCard label="⭐ media" value={(teamAttackRows.length ? teamAttackRows.reduce((s,r)=>s+Number(r.stars||0),0)/teamAttackRows.length : 0).toFixed(2)} sub="Media atacando" />
-                  <InsightCard label="Defensas analizadas" value={teamDefenseRows.length} sub="Ataques recibidos por este equipo" />
+                  <InsightCard label="Attacks Analyzed" value={teamAttackRows.length} sub="Attacks made by this team" />
+                  <InsightCard label="Attack HR" value={pct(teamAttackRows.length ? teamAttackRows.filter(r => Number(r.stars) === 3).length / teamAttackRows.length * 100 : 0)} sub="Triple rate while attacking" />
+                  <InsightCard label="Avg ⭐" value={(teamAttackRows.length ? teamAttackRows.reduce((s,r)=>s+Number(r.stars||0),0)/teamAttackRows.length : 0).toFixed(2)} sub="Average while attacking" />
+                  <InsightCard label="Defenses Analyzed" value={teamDefenseRows.length} sub="Attacks received by this team" />
+                </section>
+
+                <section className="card p-5 border-crimson/20">
+                  <SectionLabel>Base styles that give {teamFilter} the most trouble</SectionLabel>
+                  <p className="mb-4 -mt-2 text-sm text-steel">Ranked by HR conceded — the higher the HR, the more often this team gets tripled against that base + spell tower combo.</p>
+                  <DataTable title="" rows={teamDefenseProfile} columns={[["profile","Base + Tower"],["attacks","Defenses"],["triples","Triples Conceded"],["hr","HR Conceded %"],["avg_stars","Avg ⭐ Conceded"]]} />
+                </section>
+
+                <section className="card p-5 border-gold/20">
+                  <SectionLabel>Armies typically used against {teamFilter}'s weakest bases</SectionLabel>
+                  <p className="mb-4 -mt-2 text-sm text-steel">For the top base styles this team struggles with, these are the armies opponents use against them.</p>
+                  <DataTable title="" rows={teamWeakBaseToArmy} columns={[["profile","Base + Army Used"],["attacks","Times Used"],["triples","Triples"],["hr","HR %"]]} />
                 </section>
 
                 <section className="grid gap-6 lg:grid-cols-2">
-                  <DataTable title={`${teamFilter} · ejércitos usados`} rows={teamArmyProfile} columns={[["profile","Ejército"],["attacks","Usos"],["triples","Triples"],["hr","HR %"],["avg_stars","⭐ media"],["avg_percent","% medio"]]} />
-                  <DataTable title={`${teamFilter} · bases atacadas`} rows={teamBaseProfile} columns={[["profile","Base + torre"],["attacks","Ataques"],["triples","Triples"],["hr","HR %"],["avg_stars","⭐ media"],["avg_percent","% medio"]]} />
+                  <DataTable title={`${teamFilter} · Armies Used`} rows={teamArmyProfile} columns={[["profile","Army"],["attacks","Uses"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg ⭐"],["avg_percent","Avg %"]]} />
+                  <DataTable title={`${teamFilter} · Bases Attacked`} rows={teamBaseProfile} columns={[["profile","Base + Tower"],["attacks","Attacks"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg ⭐"],["avg_percent","Avg %"]]} />
                 </section>
 
                 <section className="grid gap-6 lg:grid-cols-2">
-                  <DataTable title={`${teamFilter} · ejército vs estilo de base`} rows={teamArmyBaseProfile} columns={[["profile","Ejército + base"],["attacks","Ataques"],["triples","Triples"],["hr","HR %"],["avg_stars","⭐ media"],["avg_percent","% medio"]]} />
-                  <DataTable title={`${teamFilter} · combinaciones completas`} rows={teamFullProfile} columns={[["profile","Ejército + base + hechizo"],["attacks","Ataques"],["triples","Triples"],["hr","HR %"],["avg_stars","⭐ media"],["avg_percent","% medio"]]} />
+                  <DataTable title={`${teamFilter} · Army vs Base Style`} rows={teamArmyBaseProfile} columns={[["profile","Army + Base"],["attacks","Attacks"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg ⭐"],["avg_percent","Avg %"]]} />
+                  <DataTable title={`${teamFilter} · Full Combinations`} rows={teamFullProfile} columns={[["profile","Army + Base + Tower"],["attacks","Attacks"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg ⭐"],["avg_percent","Avg %"]]} />
                 </section>
 
-                <section className="grid gap-6 lg:grid-cols-2">
-                  <DataTable title={`${teamFilter} · perfil defensivo de bases`} rows={teamDefenseProfile} columns={[["profile","Base + torre"],["attacks","Defensas"],["hr","HR concedido %"],["hr_low","IC95% min"],["hr_high","IC95% max"],["avg_stars","⭐ media concedida"]]} />
-                  <DataTable title={`${teamFilter} · ejércitos recibidos`} rows={teamReceivedArmies} columns={[["profile","Ejército rival"],["attacks","Veces recibido"],["triples","Triples concedidos"],["hr","HR concedido %"],["avg_stars","⭐ media concedida"]]} />
-                </section>
-
-                <DataTable title={`${teamFilter} · ataques y defensas recientes`} rows={selectedTeamRows.slice(0, 150)} columns={[["date","Fecha"],["attacker_name","Atacante"],["attacker_team","Equipo atk"],["army","Ejército"],["stars","⭐"],["percent","%"],["base_style","Base"],["spell_tower","Torre"],["defender_name","Defensor"],["defender_team","Equipo def"],["competition","Competición"]]} />
+                <DataTable title={`${teamFilter} · Armies Received on Defense`} rows={teamReceivedArmies} columns={[["profile","Opponent Army"],["attacks","Times Received"],["triples","Triples Conceded"],["hr","HR Conceded %"],["avg_stars","Avg ⭐ Conceded"]]} />
+                <DataTable title={`${teamFilter} · Recent Attacks and Defenses`} rows={selectedTeamRows.slice(0, 150)} columns={[["date","Date"],["attacker_name","Attacker"],["attacker_team","Atk Team"],["army","Army"],["stars","⭐"],["percent","%"],["base_style","Base"],["spell_tower","Tower"],["defender_name","Defender"],["defender_team","Def Team"],["competition","Competition"]]} />
               </>
             )}
           </>
@@ -604,49 +703,55 @@ export default function Home() {
             <section className="card p-4">
               <div className="grid gap-3 md:grid-cols-3">
                 <select className="input md:col-span-2" value={playerFilter} onChange={(e) => setPlayerFilter(e.target.value)}>
-                  <option value="all">Selecciona un jugador para scouting</option>
+                  <option value="all">Select a player to scout</option>
                   {players.map((p) => <option key={p} value={p}>{p}</option>)}
                 </select>
-                <button className="btn-ghost" onClick={() => setPlayerFilter('all')}>Quitar jugador</button>
+                <button className="btn-ghost" onClick={() => setPlayerFilter('all')}>Clear player</button>
               </div>
             </section>
 
             {playerFilter === 'all' ? (
               <>
                 <section className="grid gap-6 lg:grid-cols-2">
-                  <ChartCard title="Atacantes por HR" subtitle="Mejores atacantes con los filtros actuales." data={playerAttackStats.slice(0, 15)} yKey="player" xKey="hr" xName="HR %" color="#E2493C" />
-                  <ChartCard title="Jugadores más difíciles de triplear" subtitle="Ordenado por el límite inferior del IC95% defendiendo." data={playerDefenseStats.slice(0, 15)} yKey="player" xKey="hr_low" xName="HR mínimo fiable %" color="#3FA66E" />
+                  <div>
+                    <ChartCard title="Attackers by HR" subtitle="Best attackers under the current filters." data={playerAttackStats.slice(0, playerAttackExp.count)} yKey="player" xKey="hr" xName="HR %" color="#E2493C" />
+                    <ShowMoreControl visibleCount={playerAttackExp.count} total={playerAttackStats.length} onExpand={playerAttackExp.expand} />
+                  </div>
+                  <div>
+                    <ChartCard title="Hardest Players to Triple" subtitle="Sorted by lowest HR conceded on defense." data={playerDefenseStats.slice(0, playerDefenseExp.count)} yKey="player" xKey="hr" xName="HR %" color="#3FA66E" />
+                    <ShowMoreControl visibleCount={playerDefenseExp.count} total={playerDefenseStats.length} onExpand={playerDefenseExp.expand} />
+                  </div>
                 </section>
                 <section className="grid gap-6 lg:grid-cols-2">
-                  <DataTable title="Ranking de ataque por jugador" rows={playerAttackStats} columns={[["player","Jugador"],["attacks","Ataques"],["triples","Triples"],["hr","HR %"],["avg_stars","⭐ media"],["avg_percent","% medio"]]} />
-                  <DataTable title="Ranking de defensa por jugador" rows={playerDefenseStats} columns={[["player","Jugador"],["attacks","Defensas"],["hr","HR concedido %"],["hr_low","IC95% min"],["hr_high","IC95% max"],["avg_stars","⭐ media concedida"]]} />
+                  <DataTable title="Attack Ranking by Player" rows={playerAttackStats} columns={[["player","Player"],["attacks","Attacks"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg ⭐"],["avg_percent","Avg %"]]} />
+                  <DataTable title="Defense Ranking by Player" rows={playerDefenseStats} columns={[["player","Player"],["attacks","Defenses"],["hr","HR Conceded %"],["avg_stars","Avg ⭐ Conceded"],["avg_percent","Avg % Conceded"]]} />
                 </section>
               </>
             ) : (
               <>
                 <section className="grid gap-4 md:grid-cols-4">
-                  <InsightCard label="Ataques analizados" value={playerAttackRows.length} sub="Solo ataques de este jugador" />
-                  <InsightCard label="HR atacando" value={pct(playerAttackRows.length ? playerAttackRows.filter(r => Number(r.stars) === 3).length / playerAttackRows.length * 100 : 0)} sub="Tasa de triples atacando" />
-                  <InsightCard label="⭐ media" value={(playerAttackRows.length ? playerAttackRows.reduce((s,r)=>s+Number(r.stars||0),0)/playerAttackRows.length : 0).toFixed(2)} sub="Media atacando" />
-                  <InsightCard label="Defensas analizadas" value={playerDefenseRows.length} sub="Ataques recibidos por este jugador" />
+                  <InsightCard label="Attacks Analyzed" value={playerAttackRows.length} sub="Attacks made by this player" />
+                  <InsightCard label="Attack HR" value={pct(playerAttackRows.length ? playerAttackRows.filter(r => Number(r.stars) === 3).length / playerAttackRows.length * 100 : 0)} sub="Triple rate while attacking" />
+                  <InsightCard label="Avg ⭐" value={(playerAttackRows.length ? playerAttackRows.reduce((s,r)=>s+Number(r.stars||0),0)/playerAttackRows.length : 0).toFixed(2)} sub="Average while attacking" />
+                  <InsightCard label="Defenses Analyzed" value={playerDefenseRows.length} sub="Attacks received by this player" />
                 </section>
 
                 <section className="grid gap-6 lg:grid-cols-2">
-                  <DataTable title={`${playerFilter} · ejércitos usados`} rows={playerArmyProfile} columns={[["profile","Ejército"],["attacks","Usos"],["triples","Triples"],["hr","HR %"],["avg_stars","⭐ media"],["avg_percent","% medio"]]} />
-                  <DataTable title={`${playerFilter} · bases atacadas`} rows={playerBaseProfile} columns={[["profile","Base + torre"],["attacks","Ataques"],["triples","Triples"],["hr","HR %"],["avg_stars","⭐ media"],["avg_percent","% medio"]]} />
+                  <DataTable title={`${playerFilter} · Armies Used`} rows={playerArmyProfile} columns={[["profile","Army"],["attacks","Uses"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg ⭐"],["avg_percent","Avg %"]]} />
+                  <DataTable title={`${playerFilter} · Bases Attacked`} rows={playerBaseProfile} columns={[["profile","Base + Tower"],["attacks","Attacks"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg ⭐"],["avg_percent","Avg %"]]} />
                 </section>
 
                 <section className="grid gap-6 lg:grid-cols-2">
-                  <DataTable title={`${playerFilter} · ejército vs estilo de base`} rows={playerArmyBaseProfile} columns={[["profile","Ejército + base"],["attacks","Ataques"],["triples","Triples"],["hr","HR %"],["avg_stars","⭐ media"],["avg_percent","% medio"]]} />
-                  <DataTable title={`${playerFilter} · combinaciones completas`} rows={playerFullProfile} columns={[["profile","Ejército + base + hechizo"],["attacks","Ataques"],["triples","Triples"],["hr","HR %"],["avg_stars","⭐ media"],["avg_percent","% medio"]]} />
+                  <DataTable title={`${playerFilter} · Army vs Base Style`} rows={playerArmyBaseProfile} columns={[["profile","Army + Base"],["attacks","Attacks"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg ⭐"],["avg_percent","Avg %"]]} />
+                  <DataTable title={`${playerFilter} · Full Combinations`} rows={playerFullProfile} columns={[["profile","Army + Base + Tower"],["attacks","Attacks"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg ⭐"],["avg_percent","Avg %"]]} />
                 </section>
 
                 <section className="grid gap-6 lg:grid-cols-2">
-                  <DataTable title={`${playerFilter} · perfil defensivo de bases`} rows={playerDefenseProfile} columns={[["profile","Base + torre"],["attacks","Defensas"],["hr","HR concedido %"],["hr_low","IC95% min"],["hr_high","IC95% max"],["avg_stars","⭐ media concedida"]]} />
-                  <DataTable title={`${playerFilter} · ejércitos recibidos`} rows={playerReceivedArmies} columns={[["profile","Ejército rival"],["attacks","Veces recibido"],["triples","Triples concedidos"],["hr","HR concedido %"],["avg_stars","⭐ media concedida"]]} />
+                  <DataTable title={`${playerFilter} · Defensive Base Profile`} rows={playerDefenseProfile} columns={[["profile","Base + Tower"],["attacks","Defenses"],["hr","HR Conceded %"],["avg_stars","Avg ⭐ Conceded"]]} />
+                  <DataTable title={`${playerFilter} · Armies Received`} rows={playerReceivedArmies} columns={[["profile","Opponent Army"],["attacks","Times Received"],["triples","Triples Conceded"],["hr","HR Conceded %"],["avg_stars","Avg ⭐ Conceded"]]} />
                 </section>
 
-                <DataTable title={`${playerFilter} · historial reciente`} rows={selectedPlayerRows.slice(0, 150)} columns={[["date","Fecha"],["attacker_name","Atacante"],["attacker_team","Equipo atk"],["army","Ejército"],["stars","⭐"],["percent","%"],["base_style","Base"],["spell_tower","Torre"],["defender_name","Defensor"],["defender_team","Equipo def"],["competition","Competición"]]} />
+                <DataTable title={`${playerFilter} · Recent History`} rows={selectedPlayerRows.slice(0, 150)} columns={[["date","Date"],["attacker_name","Attacker"],["attacker_team","Atk Team"],["army","Army"],["stars","⭐"],["percent","%"],["base_style","Base"],["spell_tower","Tower"],["defender_name","Defender"],["defender_team","Def Team"],["competition","Competition"]]} />
               </>
             )}
           </>
@@ -657,36 +762,36 @@ export default function Home() {
             <section className="card p-4">
               <div className="grid gap-3 md:grid-cols-2">
                 <select className="input" value={matchFilter} onChange={(e) => setMatchFilter(e.target.value)}>
-                  <option value="all">Selecciona una partida</option>
+                  <option value="all">Select a match</option>
                   {matches.map((m) => <option key={m} value={m}>{m}</option>)}
                 </select>
-                <button className="btn-ghost" onClick={() => setMatchFilter('all')}>Quitar partida</button>
+                <button className="btn-ghost" onClick={() => setMatchFilter('all')}>Clear match</button>
               </div>
             </section>
-            <DataTable title="Ataques de la partida" rows={selectedMatchRows} columns={[['attack_order','Orden'],['attacker_name','Atacante'],['attacker_team','Equipo atk'],['army','Ejército'],['stars','⭐'],['percent','%'],['base_style','Base'],['spell_tower','Torre'],['defender_name','Defensor'],['defender_team','Equipo def'],['competition','Competición'],['date','Fecha']]} />
+            <DataTable title="Match Attacks" rows={selectedMatchRows} columns={[['attack_order','Order'],['attacker_name','Attacker'],['attacker_team','Atk Team'],['army','Army'],['stars','⭐'],['percent','%'],['base_style','Base'],['spell_tower','Tower'],['defender_name','Defender'],['defender_team','Def Team'],['competition','Competition'],['date','Date']]} />
           </>
         )}
 
         {page === 'data' && (
           <>
             <section className="grid gap-4 md:grid-cols-3">
-              <InsightCard label="Estado de la base de datos" value={`${rows.length} filas almacenadas`} sub="Filas actuales en Supabase" />
-              <InsightCard label="Filas filtradas actuales" value={total} sub="Tras aplicar los filtros globales" />
-              <InsightCard label="Comportamiento de importación" value="Modo reemplazo" sub="Actualizar Excel borra antes las filas existentes" />
+              <InsightCard label="Database Status" value={`${rows.length} rows stored`} sub="Current rows in Supabase" />
+              <InsightCard label="Currently Filtered Rows" value={total} sub="After applying global filters" />
+              <InsightCard label="Import Behavior" value="Replace mode" sub="Updating the Excel deletes existing rows first" />
             </section>
             <section className="card p-5">
               <h2 className="mb-2 flex items-center gap-2 font-display text-lg font-semibold uppercase tracking-wide text-white">
-                <Lock className="h-4 w-4 text-gold" /> Gestión de datos
+                <Lock className="h-4 w-4 text-gold" /> Data Management
               </h2>
               <p className="mb-4 text-sm text-steel">
-                Usa este botón solo cuando quieras reemplazar toda la base de datos con una nueva exportación de Excel. Tus compañeros solo necesitan el enlace público para ver los últimos datos guardados.
+                Use this only when you want to replace the entire database with a new Excel export. Teammates only need the public link to see the latest saved data.
               </p>
               <label className="btn-danger inline-flex cursor-pointer items-center gap-2">
-                <Upload className="h-4 w-4" />{uploading ? 'Actualizando base de datos...' : 'Reemplazar base de datos con Excel'}
+                <Upload className="h-4 w-4" />{uploading ? 'Updating database...' : 'Replace Database with Excel'}
                 <input type="file" accept=".xlsx,.xls" onChange={handleFile} className="hidden" />
               </label>
             </section>
-            <DataTable title="Vista previa de datos en bruto" rows={filtered.slice(0, 300)} columns={[['date','Fecha'],['attacker_name','Atacante'],['attacker_tag','Tag atacante'],['attacker_team','Equipo atk'],['army','Ejército'],['stars','⭐'],['percent','%'],['base_style','Base'],['spell_tower','Torre'],['defender_name','Defensor'],['defender_team','Equipo def'],['competition','Competición'],['match_id','ID partida']]} />
+            <DataTable title="Raw Data Preview" rows={filtered.slice(0, 300)} columns={[['date','Date'],['attacker_name','Attacker'],['attacker_tag','Atk Tag'],['attacker_team','Atk Team'],['army','Army'],['stars','⭐'],['percent','%'],['base_style','Base'],['spell_tower','Tower'],['defender_name','Defender'],['defender_team','Def Team'],['competition','Competition'],['match_id','Match ID']]} />
           </>
         )}
       </div>
@@ -707,7 +812,7 @@ function ChartCard({ title, subtitle, data, yKey, xKey, xName, scatter = false, 
               <XAxis dataKey={xKey} name={xName} stroke="#7C8AA0" />
               <YAxis dataKey={yKey} name={yKey} stroke="#7C8AA0" />
               <ZAxis range={[80, 180]} />
-              <Tooltip cursor={{ strokeDasharray: '3 3' }} contentStyle={{ background: '#11151D', border: '1px solid #262C38', color: '#EDEEF2', borderRadius: 8, fontFamily: 'var(--font-mono)', fontSize: 12 }} />
+              <Tooltip cursor={{ strokeDasharray: '3 3' }} contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} />
               <Scatter data={data} name="Combos" fill={color} />
             </ScatterChart>
           ) : (
@@ -715,7 +820,7 @@ function ChartCard({ title, subtitle, data, yKey, xKey, xName, scatter = false, 
               <CartesianGrid strokeDasharray="3 3" stroke="#1E2530" />
               <XAxis type="number" stroke="#7C8AA0" />
               <YAxis dataKey={yKey} type="category" stroke="#7C8AA0" width={155} tickFormatter={(v: any) => String(v).length > 22 ? String(v).slice(0, 22) + '…' : String(v)} />
-              <Tooltip contentStyle={{ background: '#11151D', border: '1px solid #262C38', color: '#EDEEF2', borderRadius: 8, fontFamily: 'var(--font-mono)', fontSize: 12 }} />
+              <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} cursor={{ fill: 'rgba(232,163,61,0.08)' }} />
               <Bar dataKey={xKey} name={xName} fill={color} radius={[0, 6, 6, 0]} />
             </BarChart>
           )}
@@ -728,13 +833,15 @@ function ChartCard({ title, subtitle, data, yKey, xKey, xName, scatter = false, 
 function DataTable({ title, rows, columns }: { title: string; rows: any[]; columns: [string, string][] }) {
   return (
     <section className="card overflow-hidden p-5">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div>
-          <h2 className="font-display text-lg font-semibold uppercase tracking-wide text-white">{title}</h2>
-          <p className="font-mono text-xs text-steel">{rows.length} filas</p>
+      {title ? (
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="font-display text-lg font-semibold uppercase tracking-wide text-white">{title}</h2>
+            <p className="font-mono text-xs text-steel">{rows.length} rows</p>
+          </div>
+          <Table2 className="h-4 w-4 text-gold" />
         </div>
-        <Table2 className="h-4 w-4 text-gold" />
-      </div>
+      ) : null}
       <div className="max-h-[520px] overflow-auto rounded-lg border border-line">
         <table className="table w-full">
           <thead className="sticky top-0 bg-soft">
