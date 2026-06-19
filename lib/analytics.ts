@@ -49,7 +49,6 @@ export function comboStats(rows: Attack[], minAttacks = 1): ComboRow[] {
     const hr = attacks ? +(triples / attacks * 100).toFixed(2) : 0
     const avg_stars = +(items.reduce((s, x) => s + Number(x.stars || 0), 0) / attacks).toFixed(2)
     const avg_percent = +(items.reduce((s, x) => s + Number(x.percent || 0), 0) / attacks).toFixed(2)
-    const [hr_low, hr_high] = wilsonInterval(triples, attacks)
     return {
       combo: `${title(base_style)} + ${title(spell_tower)}`,
       base_style,
@@ -57,8 +56,6 @@ export function comboStats(rows: Attack[], minAttacks = 1): ComboRow[] {
       attacks,
       triples,
       hr,
-      hr_low,
-      hr_high,
       avg_stars,
       avg_percent,
     }
