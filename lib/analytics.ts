@@ -48,3 +48,20 @@ export function comboStats(rows: Attack[], minAttacks = 0): ComboRow[] {
 export function title(s: string) {
   return s.split(' ').map(w => w ? w[0].toUpperCase() + w.slice(1) : w).join(' ')
 }
+
+// --- Attack type classification (Ground vs Air) -------------------------------------------
+// Ground if the army name contains any of: RR, Throwers, SB, Yeti, or Witch. Everything else
+// is classified as Air. This is a naming-convention heuristic over the `army` field, not a
+// separate data source, so it's only as accurate as how armies are named in the spreadsheet.
+const GROUND_KEYWORDS = ['rr', 'throwers', 'sb', 'yeti', 'witch']
+
+export type AttackType = 'ground' | 'air'
+
+export function classifyAttackType(army?: string | null): AttackType {
+  const a = clean(army)
+  if (!a) return 'air'
+  // Match whole words/tokens so e.g. "sb" doesn't accidentally match inside an unrelated word.
+  const tokens = a.split(/[^a-z0-9]+/i).filter(Boolean)
+  const isGround = tokens.some(t => GROUND_KEYWORDS.includes(t))
+  return isGround ? 'ground' : 'air'
+}
