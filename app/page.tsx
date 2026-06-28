@@ -628,7 +628,7 @@ export default function Home() {
             </section>
 
             <section className="card p-5">
-              <SectionLabel sub="How offense splits between ground and air armies, and which one converts better. Ground = army name includes RR, Throwers, SB, Yeti, or Witch.">Ground vs Air — Meta Overview</SectionLabel>
+              <SectionLabel sub="How offense splits between ground and air armies, and which one converts better. Ground = army name includes RR, Thrower, Throwers, SB, Yeti, or Witch.">Ground vs Air — Meta Overview</SectionLabel>
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="rounded-lg border border-ground/25 bg-ground/[0.05] p-4">
                   <p className="chip-ground mb-2"><Mountain className="h-3 w-3" /> Ground</p>
