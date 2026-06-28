@@ -427,25 +427,28 @@ export default function Home() {
   }, [teamDefenseRows, teamDefenseProfile])
 
   // --- Matchup Predictor ---------------------------------------------------------------------
-  // Automatically reads this team's defensive stats and surfaces:
-  //  1. The base+tower design that statistically gives them the most trouble (highest HR
-  //     conceded), restricted to combos with at least `predictorMinSample` recorded defenses.
-  //  2. The two attack strategies (army) most commonly used against that exact design, ranked
-  //     by a blend of usage volume and hit rate, so the recommendation favors approaches that
-  //     are both proven (enough attempts) and effective (high HR) rather than a one-off fluke.
+  // Automatically reads THIS TEAM'S OWN ATTACKING stats (never their defense) and surfaces:
+  //  1. The base+tower design that THIS TEAM struggles the most to triple when attacking it
+  //     (their own lowest HR while attacking), restricted to combos with at least
+  //     `predictorMinSample` attempts by this team so the read is statistically reliable.
+  //  2. The two armies THIS TEAM uses most often — and most successfully — against that exact
+  //     design, ranked by hit rate first and usage count second, so the recommendation favors
+  //     approaches that are both proven (enough attempts) and effective (high HR).
   const matchupPrediction = useMemo(() => {
     if (teamFilter === 'all') return null
-    const reliableWeakBases = teamDefenseProfile.filter(b => b.attacks >= predictorMinSample)
-    if (reliableWeakBases.length === 0) return { worstBase: null, strategies: [], insufficientData: true }
-    const worstBase = reliableWeakBases[0]
-    const rowsAgainstWorstBase = teamDefenseRows.filter(r => r.base_style === worstBase.base_style && r.spell_tower === worstBase.spell_tower)
-    const armiesAgainstWorstBase = makeComboGroup(rowsAgainstWorstBase, [['army', r => r.army || '']], 'profile')
-      // Rank by a usage-weighted HR score: armies need at least 2 attempts to be considered a "strategy",
-      // and are sorted by hit rate first, then by how many times they've been tried (proven track record).
+    // teamBaseProfile is grouped from teamAttackRows: this team's own attacks, by base+tower.
+    const reliableAttackedBases = teamBaseProfile.filter(b => b.attacks >= predictorMinSample)
+    if (reliableAttackedBases.length === 0) return { worstBase: null, strategies: [], insufficientData: true }
+    // Worst base for THIS team to attack = lowest HR among bases they've attacked enough times.
+    const worstBase = [...reliableAttackedBases].sort((a, b) => a.hr - b.hr)[0]
+    const ownRowsAgainstWorstBase = teamAttackRows.filter(r => r.base_style === worstBase.base_style && r.spell_tower === worstBase.spell_tower)
+    const ownArmiesAgainstWorstBase = makeComboGroup(ownRowsAgainstWorstBase, [['army', r => r.army || '']], 'profile')
+      // Rank by HR first, then by how many times this team has tried it (proven track record),
+      // requiring at least 2 attempts so a single lucky/unlucky try can't be called a "strategy".
       .filter(a => a.attacks >= 2)
       .sort((a, b) => b.hr - a.hr || b.attacks - a.attacks)
-    return { worstBase, strategies: armiesAgainstWorstBase.slice(0, 2), insufficientData: false }
-  }, [teamFilter, teamDefenseProfile, teamDefenseRows, predictorMinSample])
+    return { worstBase, strategies: ownArmiesAgainstWorstBase.slice(0, 2), insufficientData: false }
+  }, [teamFilter, teamBaseProfile, teamAttackRows, predictorMinSample])
 
   const playerArmyProfile = useMemo(() => makeComboGroup(playerAttackRows, [['army', r => r.army || '']], 'profile').sort((a,b) => b.attacks - a.attacks), [playerAttackRows])
   const playerBaseProfile = useMemo(() => makeComboGroup(playerAttackRows, [['base_style', r => r.base_style || ''], ['spell_tower', r => r.spell_tower || '']], 'profile').sort((a,b) => b.attacks - a.attacks), [playerAttackRows])
@@ -792,34 +795,34 @@ export default function Home() {
                       <div className="flex items-center gap-2">
                         <label className="font-mono text-[11px] uppercase tracking-wider text-steel">Min. sample</label>
                         <select className="input !py-1.5 !text-xs" value={predictorMinSample} onChange={(e) => setPredictorMinSample(Number(e.target.value))}>
-                          {[5, 10, 15, 20, 30].map(n => <option key={n} value={n}>{n}+ defenses</option>)}
+                          {[5, 10, 15, 20, 30].map(n => <option key={n} value={n}>{n}+ attacks</option>)}
                         </select>
                       </div>
                     </div>
-                    <p className="mb-5 text-sm text-steel">Automatically reads {teamFilter}'s defensive history and surfaces the design that statistically gives them the most trouble, plus the two attack strategies most commonly — and most successfully — used against it.</p>
+                    <p className="mb-5 text-sm text-steel">Automatically reads {teamFilter}'s own attacking history and surfaces the base design they struggle the most to triple, plus the two armies they use most often — and most successfully — against it.</p>
 
                     {matchupPrediction?.insufficientData ? (
                       <div className="flex items-center gap-2 rounded-lg border border-line bg-soft/60 p-4 text-sm text-steel">
-                        <AlertTriangle className="h-4 w-4 text-gold" /> Not enough data yet — no base + tower combo has {predictorMinSample}+ recorded defenses for {teamFilter}. Try lowering the minimum sample, or wait for more scouted attacks.
+                        <AlertTriangle className="h-4 w-4 text-gold" /> Not enough data yet — no base + tower combo has {predictorMinSample}+ recorded attacks BY {teamFilter}. Try lowering the minimum sample, or wait for more scouted attacks.
                       </div>
                     ) : matchupPrediction?.worstBase ? (
                       <div className="grid gap-4 lg:grid-cols-3">
                         <div className="rounded-xl border border-crimson/30 bg-crimson/[0.07] p-5">
-                          <p className="label-eyebrow flex items-center gap-1.5 text-crimson"><TrendingDown className="h-3.5 w-3.5" /> Worst Design for {teamFilter}</p>
+                          <p className="label-eyebrow flex items-center gap-1.5 text-crimson"><TrendingDown className="h-3.5 w-3.5" /> Hardest Design for {teamFilter} to Triple</p>
                           <p className="mt-2 font-display text-2xl font-semibold text-white">{matchupPrediction.worstBase.profile}</p>
-                          <p className="mt-2 font-mono text-sm text-crimson">{matchupPrediction.worstBase.hr}% HR conceded · n={matchupPrediction.worstBase.attacks}</p>
-                          <p className="mt-3 text-xs text-steel">This base + spell tower setup gets tripled more often against {teamFilter} than any other design with enough sample to be confident about.</p>
+                          <p className="mt-2 font-mono text-sm text-crimson">{matchupPrediction.worstBase.hr}% HR attacking · n={matchupPrediction.worstBase.attacks}</p>
+                          <p className="mt-3 text-xs text-steel">Of all designs {teamFilter} has attacked enough times to be confident about, this is the one they triple the least often.</p>
                         </div>
                         {matchupPrediction.strategies.length > 0 ? matchupPrediction.strategies.map((s: any, i: number) => (
                           <div key={i} className="rounded-xl border border-gold/30 bg-gold/[0.06] p-5">
-                            <p className="label-eyebrow flex items-center gap-1.5 text-gold"><Crown className="h-3.5 w-3.5" /> Recommended Strategy {i + 1}</p>
+                            <p className="label-eyebrow flex items-center gap-1.5 text-gold"><Crown className="h-3.5 w-3.5" /> {teamFilter}'s Strategy {i + 1} vs This Design</p>
                             <p className="mt-2 font-display text-2xl font-semibold text-white">{titleSafe(s.army)}</p>
-                            <p className="mt-2 font-mono text-sm text-gold">{s.hr}% HR · used {s.attacks}x against this design</p>
-                            <p className="mt-3 text-xs text-steel">Among armies tried against {teamFilter}'s weakest base, this one combines proven usage with a strong hit rate.</p>
+                            <p className="mt-2 font-mono text-sm text-gold">{s.hr}% HR · used {s.attacks}x by {teamFilter} against this design</p>
+                            <p className="mt-3 text-xs text-steel">Among armies {teamFilter} has tried against their weakest matchup, this one combines proven usage with their strongest hit rate.</p>
                           </div>
                         )) : (
                           <div className="lg:col-span-2 flex items-center gap-2 rounded-lg border border-line bg-soft/60 p-4 text-sm text-steel">
-                            <AlertTriangle className="h-4 w-4 text-gold" /> This design has been identified as {teamFilter}'s weakest, but no army has been tried against it at least twice yet — not enough to recommend a specific strategy.
+                            <AlertTriangle className="h-4 w-4 text-gold" /> This is {teamFilter}'s hardest design to triple, but no single army has been tried against it at least twice by them yet — not enough to recommend a specific strategy.
                           </div>
                         )}
                       </div>
