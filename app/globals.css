@@ -3,15 +3,48 @@
 @tailwind utilities;
 
 * { box-sizing: border-box; }
+
+/* --- Theme tokens ---------------------------------------------------------------------------
+   Light and dark share the same variable names; only the values change. Tailwind colors (bg,
+   panel, soft, line, ink, steel) read these via rgb(var(--c-x) / <alpha-value>) in
+   tailwind.config.ts, so every existing utility class (bg-bg, text-ink, border-line, etc.)
+   automatically follows the active theme — no dark: variants needed throughout page.tsx. */
+:root {
+  --c-bg: 244 246 250;
+  --c-panel: 255 255 255;
+  --c-soft: 240 242 247;
+  --c-line: 226 230 237;
+  --c-ink: 19 23 32;
+  --c-steel: 107 116 136;
+  --shadow-card: 0 1px 2px rgba(19,23,32,0.04), 0 8px 24px -8px rgba(19,23,32,0.08);
+  --grid-line: rgba(19,23,32,0.035);
+  --tooltip-shadow: 0 8px 24px -8px rgba(19,23,32,0.15);
+}
+
+html.dark {
+  --c-bg: 10 12 18;
+  --c-panel: 19 23 32;
+  --c-soft: 26 31 42;
+  --c-line: 42 49 64;
+  --c-ink: 237 238 242;
+  --c-steel: 145 153 173;
+  --shadow-card: 0 1px 0 rgba(255,255,255,0.03) inset, 0 8px 24px rgba(0,0,0,0.45);
+  --grid-line: rgba(14,198,224,0.05);
+  --tooltip-shadow: 0 8px 24px -8px rgba(0,0,0,0.6);
+}
+
 html { color-scheme: light; }
+html.dark { color-scheme: dark; }
+
 body {
-  background-color: #F4F6FA;
+  background-color: rgb(var(--c-bg));
   background-image:
-    radial-gradient(ellipse 900px 500px at 10% -10%, rgba(14,198,224,0.06), transparent),
-    radial-gradient(ellipse 800px 500px at 100% 0%, rgba(224,57,158,0.05), transparent);
-  color: #131720;
+    radial-gradient(ellipse 900px 500px at 10% -10%, rgba(14,198,224,0.07), transparent),
+    radial-gradient(ellipse 800px 500px at 100% 0%, rgba(224,57,158,0.06), transparent);
+  color: rgb(var(--c-ink));
   font-family: var(--font-body), sans-serif;
   -webkit-font-smoothing: antialiased;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 .font-display { font-family: var(--font-display), sans-serif; }
@@ -19,13 +52,14 @@ body {
 
 .tactical-grid {
   background-image:
-    linear-gradient(rgba(19,23,32,0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(19,23,32,0.035) 1px, transparent 1px);
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
   background-size: 28px 28px;
 }
 
 .card {
-  @apply rounded-xl border border-line bg-panel shadow-[0_1px_2px_rgba(19,23,32,0.04),0_8px_24px_-8px_rgba(19,23,32,0.08)];
+  @apply rounded-xl border border-line bg-panel;
+  box-shadow: var(--shadow-card);
 }
 
 .card-edge { position: relative; }
@@ -39,21 +73,24 @@ body {
 }
 
 .input {
-  @apply rounded-lg border border-line bg-white px-3 py-2 text-sm text-ink outline-none transition focus:border-cyan/50 focus:ring-2 focus:ring-cyan/15;
+  @apply rounded-lg border border-line bg-panel px-3 py-2 text-sm text-ink outline-none transition focus:border-cyan/50 focus:ring-2 focus:ring-cyan/15;
 }
-.input option { background: #fff; color: #131720; }
+.input option { background: rgb(var(--c-panel)); color: rgb(var(--c-ink)); }
 
 .btn {
-  @apply rounded-lg bg-ink px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#262C38] active:scale-[0.98];
+  @apply rounded-lg bg-ink px-4 py-2 text-sm font-semibold text-bg transition hover:opacity-90 active:scale-[0.98];
 }
 .btn-brand {
   @apply rounded-lg bg-brand-gradient px-4 py-2 text-sm font-semibold text-white shadow-[0_4px_14px_-4px_rgba(224,57,158,0.4)] transition hover:opacity-95 active:scale-[0.98];
 }
 .btn-ghost {
-  @apply rounded-lg border border-line bg-white px-4 py-2 text-sm font-semibold text-ink/80 transition hover:border-cyan/40 hover:bg-cyan/[0.04] active:scale-[0.98];
+  @apply rounded-lg border border-line bg-panel px-4 py-2 text-sm font-semibold text-ink/80 transition hover:border-cyan/40 hover:bg-cyan/[0.06] active:scale-[0.98];
 }
 .btn-danger {
-  @apply rounded-lg border border-danger/30 bg-danger/[0.06] px-4 py-2 text-sm font-semibold text-danger transition hover:bg-danger/[0.12];
+  @apply rounded-lg border border-danger/30 bg-danger/[0.08] px-4 py-2 text-sm font-semibold text-danger transition hover:bg-danger/[0.15];
+}
+.btn-icon {
+  @apply rounded-lg border border-line bg-panel p-2 text-ink/70 transition hover:border-cyan/40 hover:text-ink active:scale-[0.96];
 }
 
 .label-eyebrow {
@@ -67,7 +104,7 @@ body {
   @apply border-t border-line px-3 py-2.5 text-sm text-ink;
 }
 .table tbody tr { transition: background-color 0.15s ease; }
-.table tbody tr:hover { background: rgba(14,198,224,0.04); }
+.table tbody tr:hover { background: rgba(14,198,224,0.06); }
 
 .star-pip {
   display: inline-block;
@@ -75,18 +112,17 @@ body {
   text-align: center;
 }
 
-/* Ground / Air attack-type chips */
 .chip-ground { @apply inline-flex items-center gap-1 rounded-md bg-ground/10 px-2 py-0.5 text-[11px] font-semibold text-ground; }
 .chip-air { @apply inline-flex items-center gap-1 rounded-md bg-air/10 px-2 py-0.5 text-[11px] font-semibold text-air; }
 
-.recharts-text, .recharts-cartesian-axis-tick-value { fill: #6B7488 !important; font-family: var(--font-mono), monospace !important; font-size: 11px !important; }
-.recharts-tooltip-wrapper { color: #131720 !important; }
-.recharts-cartesian-grid-horizontal line, .recharts-cartesian-grid-vertical line { stroke: #E2E6ED !important; }
+.recharts-text, .recharts-cartesian-axis-tick-value { fill: rgb(var(--c-steel)) !important; font-family: var(--font-mono), monospace !important; font-size: 11px !important; }
+.recharts-tooltip-wrapper { color: rgb(var(--c-ink)) !important; }
+.recharts-cartesian-grid-horizontal line, .recharts-cartesian-grid-vertical line { stroke: rgb(var(--c-line)) !important; }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #D7DCE5; border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: #B9C0CC; }
+::-webkit-scrollbar-thumb { background: rgb(var(--c-line)); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: rgb(var(--c-steel)); }
 
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }

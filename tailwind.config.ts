@@ -1,26 +1,30 @@
 import type { Config } from 'tailwindcss'
 
 const config: Config = {
+  darkMode: 'class',
   content: ['./app/**/*.{js,ts,jsx,tsx}', './components/**/*.{js,ts,jsx,tsx}'],
   theme: {
     extend: {
       colors: {
-        bg: '#F4F6FA',
-        panel: '#FFFFFF',
-        soft: '#F0F2F7',
-        line: '#E2E6ED',
-        ink: '#131720',
-        steel: '#6B7488',
+        // These resolve to CSS variables defined per-theme in globals.css (:root and .dark),
+        // so existing utility classes like bg-bg, text-ink, border-line automatically flip
+        // between light and dark values without needing dark: variants sprinkled everywhere.
+        bg: 'rgb(var(--c-bg) / <alpha-value>)',
+        panel: 'rgb(var(--c-panel) / <alpha-value>)',
+        soft: 'rgb(var(--c-soft) / <alpha-value>)',
+        line: 'rgb(var(--c-line) / <alpha-value>)',
+        ink: 'rgb(var(--c-ink) / <alpha-value>)',
+        steel: 'rgb(var(--c-steel) / <alpha-value>)',
         cyan: '#0EC6E0',
         magenta: '#E0399E',
-        ground: '#B8862E',
-        air: '#3B8FD6',
-        success: '#1A9C6B',
-        danger: '#D8425C',
+        ground: '#C9963F',
+        air: '#4FA3E8',
+        success: '#22B07D',
+        danger: '#E15571',
         // legacy aliases kept so existing utility classes (bg-gold, text-crimson, etc.) still resolve
-        gold: '#B8862E',
-        crimson: '#D8425C',
-        forest: '#1A9C6B',
+        gold: '#C9963F',
+        crimson: '#E15571',
+        forest: '#22B07D',
       },
       fontFamily: {
         display: ['var(--font-display)'],

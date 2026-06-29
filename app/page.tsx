@@ -39,6 +39,8 @@ import {
   TrendingDown,
   Mountain,
   Wind,
+  Sun,
+  Moon,
 } from 'lucide-react'
 import * as XLSX from 'xlsx'
 
@@ -131,18 +133,23 @@ function AttackTypeChip({ type }: { type: 'ground' | 'air' }) {
   )
 }
 
-/** Shared tooltip style for Recharts, tuned for the light theme. */
-const tooltipStyle = {
-  background: '#FFFFFF',
-  border: '1px solid #E2E6ED',
-  color: '#131720',
-  borderRadius: 8,
-  fontFamily: 'var(--font-mono)',
-  fontSize: 12,
-  boxShadow: '0 8px 24px -8px rgba(19,23,32,0.15)',
+/** Theme-aware chart colors for Recharts (which needs literal hex/rgb, not CSS variables, to
+ * render reliably in SVG). Recomputed from the current theme so axes/tooltips/grid follow
+ * dark/light mode instead of staying frozen at whichever theme was active on first render. */
+function chartColors(theme: 'dark' | 'light') {
+  return theme === 'dark'
+    ? { panel: '#131720', line: '#2A3140', ink: '#EDEEF2', steel: '#9199AD' }
+    : { panel: '#FFFFFF', line: '#E2E6ED', ink: '#131720', steel: '#6B7488' }
 }
-const tooltipLabelStyle = { color: '#131720', fontWeight: 600 }
-const tooltipItemStyle = { color: '#131720' }
+
+function getTooltipStyle(theme: 'dark' | 'light') {
+  const c = chartColors(theme)
+  return {
+    style: { background: c.panel, border: `1px solid ${c.line}`, color: c.ink, borderRadius: 8, fontFamily: 'var(--font-mono)', fontSize: 12, boxShadow: theme === 'dark' ? '0 8px 24px -8px rgba(0,0,0,0.6)' : '0 8px 24px -8px rgba(19,23,32,0.15)' },
+    labelStyle: { color: c.ink, fontWeight: 600 },
+    itemStyle: { color: c.ink },
+  }
+}
 
 /** "Show more" control used under rankings/charts: starts small, expands in steps, with an explicit step count visible. */
 function ShowMoreControl({ visibleCount, total, onExpand }: { visibleCount: number; total: number; onExpand: () => void }) {
@@ -164,6 +171,40 @@ function useExpandable(total: number) {
     setCount(next === Infinity ? total : next)
   }
   return { count: Math.min(count, total), expand }
+}
+
+/** Dark/light theme toggle. Defaults to dark (the requested preference) on first visit, then
+ * remembers the user's choice in localStorage. Applies the "dark" class to the html element,
+ * which flips every CSS variable defined in globals.css (and therefore every bg-*, text-*, and
+ * border-* utility built on top of them) without needing extra dark variants throughout the rest
+ * of this file. */
+function useTheme() {
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark')
+
+  useEffect(() => {
+    const stored = typeof window !== 'undefined' ? window.localStorage.getItem('elektro-theme') : null
+    const initial = stored === 'light' || stored === 'dark' ? stored : 'dark'
+    setTheme(initial)
+    document.documentElement.classList.toggle('dark', initial === 'dark')
+  }, [])
+
+  const toggle = () => {
+    const next = theme === 'dark' ? 'light' : 'dark'
+    setTheme(next)
+    document.documentElement.classList.toggle('dark', next === 'dark')
+    window.localStorage.setItem('elektro-theme', next)
+  }
+
+  return { theme, toggle }
+}
+
+function ThemeToggle({ theme, toggle }: { theme: 'dark' | 'light'; toggle: () => void }) {
+  return (
+    <button onClick={toggle} className="btn-icon flex items-center gap-2" aria-label="Toggle dark/light theme">
+      {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+      <span className="font-mono text-xs font-semibold uppercase tracking-wider">{theme === 'dark' ? 'Light' : 'Dark'}</span>
+    </button>
+  )
 }
 
 function toDateString(value: any) {
@@ -284,16 +325,18 @@ function groundAirSplit(rows: Attack[]) {
   return { ground: summarize(ground), air: summarize(air) }
 }
 
-function Distribution({ rows }: { rows: any[] }) {
+function Distribution({ rows, theme }: { rows: any[]; theme: 'dark' | 'light' }) {
+  const c = chartColors(theme)
+  const ts = getTooltipStyle(theme)
   return (
     <div className="h-[260px]">
       <ResponsiveContainer width="100%" height="100%">
         <PieChart>
-          <Pie data={rows} dataKey="value" nameKey="name" outerRadius={88} innerRadius={50} paddingAngle={2} stroke="#FFFFFF" strokeWidth={2}>
+          <Pie data={rows} dataKey="value" nameKey="name" outerRadius={88} innerRadius={50} paddingAngle={2} stroke={c.panel} strokeWidth={2}>
             {rows.map((_, idx) => <Cell key={idx} fill={PALETTE[idx % PALETTE.length]} />)}
           </Pie>
-          <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} />
-          <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: '#131720' }} />
+          <Tooltip contentStyle={ts.style} labelStyle={ts.labelStyle} itemStyle={ts.itemStyle} />
+          <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: c.ink }} />
         </PieChart>
       </ResponsiveContainer>
     </div>
@@ -301,6 +344,7 @@ function Distribution({ rows }: { rows: any[] }) {
 }
 
 export default function Home() {
+  const { theme, toggle: toggleTheme } = useTheme()
   const [rows, setRows] = useState<Attack[]>([])
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState<Page>('overview')
@@ -419,6 +463,13 @@ export default function Home() {
       .filter(b => b.totalAttacks >= 2).sort((a, b) => b.totalAttacks - a.totalAttacks)
   }, [analysisRows])
 
+  // Per-army breakdown, tagged with its detected type — lets you sanity-check the ground/air
+  // classification at a glance (e.g. spot an army that landed in the wrong bucket) and see which
+  // specific army performs best within each category, not just the aggregate.
+  const armyTypeBreakdown = useMemo(() => {
+    return armyStats.map(a => ({ ...a, type: classifyAttackType(a.army) })).sort((a, b) => b.attacks - a.attacks)
+  }, [armyStats])
+
   const heatmap = useMemo(() => {
     const baseList = Array.from(new Set(combos.map((c) => c.base_style))).sort()
     const spellList = Array.from(new Set(combos.map((c) => c.spell_tower))).sort()
@@ -524,6 +575,8 @@ export default function Home() {
   const playerAttackExp = useExpandable(playerAttackStats.length)
   const comboTableExp = useExpandable(rankingAll.length)
   const groundAirTeamExp = useExpandable(groundAirByTeam.length)
+  const chartC = chartColors(theme)
+  const chartTs = getTooltipStyle(theme)
 
   return (
     <main className="min-h-screen bg-bg p-4 text-ink md:p-6">
@@ -544,6 +597,7 @@ export default function Home() {
               </p>
             </div>
             <div className="flex gap-2.5">
+              <ThemeToggle theme={theme} toggle={toggleTheme} />
               <button className="btn-ghost flex items-center gap-2" onClick={loadData}>
                 <Database className={`h-4 w-4 ${loading ? 'animate-pulse' : ''}`} /> Refresh
               </button>
@@ -628,7 +682,7 @@ export default function Home() {
             </section>
 
             <section className="card p-5">
-              <SectionLabel sub="How offense splits between ground and air armies, and which one converts better. Ground = army name includes RR, Thrower, Throwers, SB, Yeti, or Witch.">Ground vs Air — Meta Overview</SectionLabel>
+              <SectionLabel sub="How offense splits between ground and air armies, and which one converts better. Ground = army name includes RR, Throwers, SB, Yeti, or Witch.">Ground vs Air — Meta Overview</SectionLabel>
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="rounded-lg border border-ground/25 bg-ground/[0.05] p-4">
                   <p className="chip-ground mb-2"><Mountain className="h-3 w-3" /> Ground</p>
@@ -642,7 +696,7 @@ export default function Home() {
                 </div>
               </div>
               <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                <Distribution rows={groundAirDistribution} />
+                <Distribution rows={groundAirDistribution} theme={theme} />
                 <div className="flex flex-col justify-center gap-2 text-sm text-steel">
                   <p>
                     <span className="font-semibold text-ink">{groundAirOverview.ground.attacks > groundAirOverview.air.attacks ? 'Ground' : 'Air'}</span> attacks make up the majority of recorded offense under the current filters.
@@ -652,6 +706,10 @@ export default function Home() {
                   </p>
                 </div>
               </div>
+              <div className="mt-5">
+                <SectionLabel sub="Every army, tagged with its detected type — use this to sanity-check the classification and see which specific army performs best within ground or air.">Army Breakdown by Type</SectionLabel>
+                <DataTable title="" rows={armyTypeBreakdown.map(a => ({ army: titleSafe(a.army), type: a.type === 'ground' ? 'Ground' : 'Air', attacks: a.attacks, triples: a.triples, hr: `${a.hr}%`, avg_stars: a.avg_stars }))} columns={[['army','Army'],['type','Type'],['attacks','Attacks'],['triples','Triples'],['hr','HR'],['avg_stars','Avg ⭐']]} />
+              </div>
             </section>
 
             <section className="card p-5">
@@ -659,12 +717,12 @@ export default function Home() {
               <div className="h-[340px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={baseStatsReliable.map(b => ({ ...b, label: titleSafe(b.base) }))} layout="vertical" margin={{ left: 10, right: 70, top: 5, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#E2E6ED" horizontal={false} />
-                    <XAxis type="number" stroke="#6B7488" domain={[0, 100]} unit="%" />
-                    <YAxis dataKey="label" type="category" stroke="#6B7488" width={130} />
-                    <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} formatter={(v: any, n: any, p: any) => [`${v}% (n=${p.payload.attacks})`, 'HR']} />
-                    <Bar dataKey="hr" name="HR" fill="#1A9C6B" radius={[0, 6, 6, 0]}>
-                      <LabelList dataKey="hr" position="right" formatter={(v: any) => `${v}%`} fill="#131720" fontFamily="var(--font-mono)" fontSize={11} />
+                    <CartesianGrid strokeDasharray="3 3" stroke={chartC.line} horizontal={false} />
+                    <XAxis type="number" stroke={chartC.steel} domain={[0, 100]} unit="%" />
+                    <YAxis dataKey="label" type="category" stroke={chartC.steel} width={130} />
+                    <Tooltip contentStyle={chartTs.style} labelStyle={chartTs.labelStyle} itemStyle={chartTs.itemStyle} formatter={(v: any, n: any, p: any) => [`${v}% (n=${p.payload.attacks})`, 'HR']} />
+                    <Bar dataKey="hr" name="HR" fill="#22B07D" radius={[0, 6, 6, 0]}>
+                      <LabelList dataKey="hr" position="right" formatter={(v: any) => `${v}%`} fill={chartC.ink} fontFamily="var(--font-mono)" fontSize={11} />
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
@@ -677,12 +735,12 @@ export default function Home() {
               <div className="h-[300px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={spellStatsReliable.map(s => ({ ...s, label: titleSafe(s.spell) }))} layout="vertical" margin={{ left: 10, right: 70, top: 5, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#E2E6ED" horizontal={false} />
-                    <XAxis type="number" stroke="#6B7488" domain={[0, 100]} unit="%" />
-                    <YAxis dataKey="label" type="category" stroke="#6B7488" width={130} />
-                    <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} formatter={(v: any, n: any, p: any) => [`${v}% (n=${p.payload.attacks})`, 'HR']} />
+                    <CartesianGrid strokeDasharray="3 3" stroke={chartC.line} horizontal={false} />
+                    <XAxis type="number" stroke={chartC.steel} domain={[0, 100]} unit="%" />
+                    <YAxis dataKey="label" type="category" stroke={chartC.steel} width={130} />
+                    <Tooltip contentStyle={chartTs.style} labelStyle={chartTs.labelStyle} itemStyle={chartTs.itemStyle} formatter={(v: any, n: any, p: any) => [`${v}% (n=${p.payload.attacks})`, 'HR']} />
                     <Bar dataKey="hr" name="HR" fill="#0EC6E0" radius={[0, 6, 6, 0]}>
-                      <LabelList dataKey="hr" position="right" formatter={(v: any) => `${v}%`} fill="#131720" fontFamily="var(--font-mono)" fontSize={11} />
+                      <LabelList dataKey="hr" position="right" formatter={(v: any) => `${v}%`} fill={chartC.ink} fontFamily="var(--font-mono)" fontSize={11} />
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
@@ -692,11 +750,11 @@ export default function Home() {
 
             <section className="grid gap-6 lg:grid-cols-2">
               <div>
-                <ChartCard title="Most Vulnerable Combos (HR)" subtitle={`Base + tower combos with ${predictorMinSample}+ attacks, ranked low to high HR — highest HR (right side) is easiest to triple.`} data={rankingHR.slice(0, rankingHRExp.count)} yKey="combo" xKey="hr" xName="HR %" color="#D8425C" showLabel />
+                <ChartCard title="Most Vulnerable Combos (HR)" subtitle={`Base + tower combos with ${predictorMinSample}+ attacks, ranked low to high HR — highest HR (right side) is easiest to triple.`} data={rankingHR.slice(0, rankingHRExp.count)} yKey="combo" xKey="hr" xName="HR %" color="#D8425C" showLabel theme={theme} />
                 <ShowMoreControl visibleCount={rankingHRExp.count} total={rankingHR.length} onExpand={rankingHRExp.expand} />
               </div>
               <div>
-                <ChartCard title="Most Reliable Defenses" subtitle={`Same ranking, read from the top: lowest HR conceded first. Minimum ${predictorMinSample} attacks.`} data={rankingReliableDefense.slice(0, rankingDefExp.count)} yKey="combo" xKey="hr" xName="HR %" color="#1A9C6B" showLabel />
+                <ChartCard title="Most Reliable Defenses" subtitle={`Same ranking, read from the top: lowest HR conceded first. Minimum ${predictorMinSample} attacks.`} data={rankingReliableDefense.slice(0, rankingDefExp.count)} yKey="combo" xKey="hr" xName="HR %" color="#1A9C6B" showLabel theme={theme} />
                 <ShowMoreControl visibleCount={rankingDefExp.count} total={rankingReliableDefense.length} onExpand={rankingDefExp.expand} />
               </div>
             </section>
@@ -706,10 +764,10 @@ export default function Home() {
               <div className="h-[280px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={metaTrend} margin={{ left: 5, right: 15 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#E2E6ED" />
-                    <XAxis dataKey="month" stroke="#6B7488" />
-                    <YAxis stroke="#6B7488" unit="%" />
-                    <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} />
+                    <CartesianGrid strokeDasharray="3 3" stroke={chartC.line} />
+                    <XAxis dataKey="month" stroke={chartC.steel} />
+                    <YAxis stroke={chartC.steel} unit="%" />
+                    <Tooltip contentStyle={chartTs.style} labelStyle={chartTs.labelStyle} itemStyle={chartTs.itemStyle} />
                     <Bar dataKey="hr" name="HR %" fill="#E0399E" radius={[6, 6, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
@@ -717,9 +775,9 @@ export default function Home() {
             </section>
 
             <section className="grid gap-6 lg:grid-cols-3">
-              <div className="card p-5"><SectionLabel>Star Distribution</SectionLabel><Distribution rows={starDistribution} /></div>
-              <div className="card p-5"><SectionLabel>Volume by Base Style</SectionLabel><Distribution rows={baseDistribution} /></div>
-              <div className="card p-5"><SectionLabel>Volume by Spell Tower</SectionLabel><Distribution rows={spellDistribution} /></div>
+              <div className="card p-5"><SectionLabel>Star Distribution</SectionLabel><Distribution rows={starDistribution} theme={theme} /></div>
+              <div className="card p-5"><SectionLabel>Volume by Base Style</SectionLabel><Distribution rows={baseDistribution} theme={theme} /></div>
+              <div className="card p-5"><SectionLabel>Volume by Spell Tower</SectionLabel><Distribution rows={spellDistribution} theme={theme} /></div>
             </section>
           </>
         )}
@@ -767,9 +825,9 @@ export default function Home() {
               </p>
             </section>
             <section className="grid gap-6 lg:grid-cols-2">
-              <ChartCard title="HR vs. Sample Size" subtitle="Spot combos with a high HR but an unreliable (low) sample. Includes all combos." data={combos} yKey="hr" xKey="attacks" xName="Attacks" scatter color="#0EC6E0" />
+              <ChartCard title="HR vs. Sample Size" subtitle="Spot combos with a high HR but an unreliable (low) sample. Includes all combos." data={combos} yKey="hr" xKey="attacks" xName="Attacks" scatter color="#0EC6E0" theme={theme} />
               <div>
-                <ChartCard title="Lowest Average Stars Conceded" subtitle={`Lower average stars usually indicates better defensive value. Minimum ${predictorMinSample} attacks.`} data={rankingStars.slice(0, rankingStarsExp.count)} yKey="combo" xKey="avg_stars" xName="Avg Stars" color="#6B7488" />
+                <ChartCard title="Lowest Average Stars Conceded" subtitle={`Lower average stars usually indicates better defensive value. Minimum ${predictorMinSample} attacks.`} data={rankingStars.slice(0, rankingStarsExp.count)} yKey="combo" xKey="avg_stars" xName="Avg Stars" color="#6B7488" theme={theme} />
                 <ShowMoreControl visibleCount={rankingStarsExp.count} total={rankingStars.length} onExpand={rankingStarsExp.expand} />
               </div>
             </section>
@@ -804,7 +862,7 @@ export default function Home() {
               <>
                 <section className="grid gap-6 lg:grid-cols-2">
                   <div>
-                    <ChartCard title="Teams by Attack HR" subtitle="Best attacking teams under the current filters." data={attackTeamStats.slice(0, attackTeamExp.count)} yKey="team" xKey="hr" xName="HR %" color="#D8425C" showLabel />
+                    <ChartCard title="Teams by Attack HR" subtitle="Best attacking teams under the current filters." data={attackTeamStats.slice(0, attackTeamExp.count)} yKey="team" xKey="hr" xName="HR %" color="#D8425C" showLabel theme={theme} />
                     <ShowMoreControl visibleCount={attackTeamExp.count} total={attackTeamStats.length} onExpand={attackTeamExp.expand} />
                   </div>
                   <div className="card p-5">
@@ -926,7 +984,7 @@ export default function Home() {
             {playerFilter === 'all' ? (
               <>
                 <div>
-                  <ChartCard title="Attackers by HR" subtitle="Best attackers under the current filters." data={playerAttackStats.slice(0, playerAttackExp.count)} yKey="player" xKey="hr" xName="HR %" color="#D8425C" showLabel />
+                  <ChartCard title="Attackers by HR" subtitle="Best attackers under the current filters." data={playerAttackStats.slice(0, playerAttackExp.count)} yKey="player" xKey="hr" xName="HR %" color="#D8425C" showLabel theme={theme} />
                   <ShowMoreControl visibleCount={playerAttackExp.count} total={playerAttackStats.length} onExpand={playerAttackExp.expand} />
                 </div>
                 <DataTable title="Attack Ranking by Player" rows={playerAttackStats} columns={[["player","Player"],["attacks","Attacks"],["triples","Triples"],["hr","HR %"],["avg_stars","Avg ⭐"],["avg_percent","Avg %"]]} />
@@ -997,7 +1055,9 @@ export default function Home() {
   )
 }
 
-function ChartCard({ title, subtitle, data, yKey, xKey, xName, scatter = false, color = '#0EC6E0', showLabel = false }: any) {
+function ChartCard({ title, subtitle, data, yKey, xKey, xName, scatter = false, color = '#0EC6E0', showLabel = false, theme = 'dark' }: any) {
+  const c = chartColors(theme)
+  const ts = getTooltipStyle(theme)
   return (
     <div className="card p-5">
       <h2 className="font-display text-lg font-semibold uppercase tracking-wide text-ink">{title}</h2>
@@ -1006,21 +1066,21 @@ function ChartCard({ title, subtitle, data, yKey, xKey, xName, scatter = false, 
         <ResponsiveContainer width="100%" height="100%">
           {scatter ? (
             <ScatterChart margin={{ left: 15, right: 30, top: 15, bottom: 15 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#E2E6ED" />
-              <XAxis dataKey={xKey} name={xName} stroke="#6B7488" />
-              <YAxis dataKey={yKey} name={yKey} stroke="#6B7488" />
+              <CartesianGrid strokeDasharray="3 3" stroke={c.line} />
+              <XAxis dataKey={xKey} name={xName} stroke={c.steel} />
+              <YAxis dataKey={yKey} name={yKey} stroke={c.steel} />
               <ZAxis range={[80, 180]} />
-              <Tooltip cursor={{ strokeDasharray: '3 3' }} contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} />
+              <Tooltip cursor={{ strokeDasharray: '3 3' }} contentStyle={ts.style} labelStyle={ts.labelStyle} itemStyle={ts.itemStyle} />
               <Scatter data={data} name="Combos" fill={color} />
             </ScatterChart>
           ) : (
             <BarChart data={data} layout="vertical" margin={{ left: 85, right: showLabel ? 60 : 25 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#E2E6ED" />
-              <XAxis type="number" stroke="#6B7488" />
-              <YAxis dataKey={yKey} type="category" stroke="#6B7488" width={155} tickFormatter={(v: any) => String(v).length > 22 ? String(v).slice(0, 22) + '…' : String(v)} />
-              <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} cursor={{ fill: 'rgba(14,198,224,0.06)' }} formatter={(v: any, n: any, p: any) => [`${v}%${p?.payload?.attacks !== undefined ? ` (n=${p.payload.attacks})` : ''}`, xName]} />
+              <CartesianGrid strokeDasharray="3 3" stroke={c.line} />
+              <XAxis type="number" stroke={c.steel} />
+              <YAxis dataKey={yKey} type="category" stroke={c.steel} width={155} tickFormatter={(v: any) => String(v).length > 22 ? String(v).slice(0, 22) + '…' : String(v)} />
+              <Tooltip contentStyle={ts.style} labelStyle={ts.labelStyle} itemStyle={ts.itemStyle} cursor={{ fill: 'rgba(14,198,224,0.08)' }} formatter={(v: any, n: any, p: any) => [`${v}%${p?.payload?.attacks !== undefined ? ` (n=${p.payload.attacks})` : ''}`, xName]} />
               <Bar dataKey={xKey} name={xName} fill={color} radius={[0, 6, 6, 0]}>
-                {showLabel && <LabelList dataKey={xKey} position="right" formatter={(v: any) => `${v}%`} fill="#131720" fontFamily="var(--font-mono)" fontSize={11} />}
+                {showLabel && <LabelList dataKey={xKey} position="right" formatter={(v: any) => `${v}%`} fill={c.ink} fontFamily="var(--font-mono)" fontSize={11} />}
               </Bar>
             </BarChart>
           )}

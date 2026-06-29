@@ -50,18 +50,25 @@ export function title(s: string) {
 }
 
 // --- Attack type classification (Ground vs Air) -------------------------------------------
-// Ground if the army name contains any of: RR, Throwers, SB, Yeti, or Witch. Everything else
-// is classified as Air. This is a naming-convention heuristic over the `army` field, not a
-// separate data source, so it's only as accurate as how armies are named in the spreadsheet.
-const GROUND_KEYWORDS = ['rr', 'throwers', 'sb', 'yeti', 'witch']
+// Ground if the army name contains any of: RR, Thrower/Throwers, SB, Yeti, or Witch (and its
+// plural Witches). Everything else is classified as Air. This is a naming-convention heuristic
+// over the `army` field, not a separate data source, so it's only as accurate as how armies are
+// named in the spreadsheet.
+//
+// Bugfix: the previous version matched whole tokens only against an exact keyword list that
+// included "throwers" but not the singular "thrower", so an army named e.g. "RR Thrower" (no
+// trailing s) was never flagged as Ground. Switched to substring matching on each whitespace-
+// trimmed token so singular/plural variants (thrower/throwers, witch/witches) both match, while
+// still requiring "sb"/"rr" to be a standalone token (not matched inside an unrelated word).
+const GROUND_SUBSTRINGS = ['thrower', 'yeti', 'witch']
+const GROUND_EXACT_TOKENS = ['rr', 'sb']
 
 export type AttackType = 'ground' | 'air'
 
 export function classifyAttackType(army?: string | null): AttackType {
   const a = clean(army)
   if (!a) return 'air'
-  // Match whole words/tokens so e.g. "sb" doesn't accidentally match inside an unrelated word.
   const tokens = a.split(/[^a-z0-9]+/i).filter(Boolean)
-  const isGround = tokens.some(t => GROUND_KEYWORDS.includes(t))
+  const isGround = tokens.some(t => GROUND_EXACT_TOKENS.includes(t) || GROUND_SUBSTRINGS.some(kw => t.includes(kw)))
   return isGround ? 'ground' : 'air'
 }
