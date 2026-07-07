@@ -421,15 +421,64 @@ export default function Home() {
   const rankingHR = useMemo(() => [...combosReliable].sort((a, b) => a.hr - b.hr), [combosReliable])
   const rankingReliableDefense = useMemo(() => [...combosReliable].sort((a, b) => a.hr - b.hr), [combosReliable])
   const rankingStars = useMemo(() => [...combosReliable].sort((a, b) => a.avg_stars - b.avg_stars), [combosReliable])
-  const rankingAll = useMemo(() => [...combos].sort((a, b) => a.hr - b.hr), [combos])
+  const rankingAll = useMemo(() => {
+    // Pre-compute Ground/Air split per base+spell combination for the full combo table
+    const comboRows = new Map<string, Attack[]>()
+    analysisRows.forEach(r => {
+      const k = `${r.base_style || ''}|||${r.spell_tower || ''}`
+      if (!comboRows.has(k)) comboRows.set(k, [])
+      comboRows.get(k)!.push(r)
+    })
+    return [...combos].sort((a, b) => a.hr - b.hr).map(c => {
+      const split = groundAirSplit(comboRows.get(`${c.base_style}|||${c.spell_tower}`) || [])
+      return {
+        ...c,
+        ground_hr: split.ground.attacks > 0 ? `${split.ground.hr}% (n=${split.ground.attacks})` : '—',
+        air_hr: split.air.attacks > 0 ? `${split.air.hr}% (n=${split.air.attacks})` : '—',
+        // Which type dominates this cell? Used in heatmap and overview to flag the better approach.
+        dominant: split.ground.attacks >= 3 && split.air.attacks >= 3
+          ? (split.ground.hr > split.air.hr ? 'Ground' : 'Air')
+          : split.ground.attacks >= 3 ? 'Ground only' : split.air.attacks >= 3 ? 'Air only' : '—',
+      }
+    })
+  }, [combos, analysisRows])
 
   const attackTeamStats = useMemo(() => makeGroup(analysisRows, (r) => r.attacker_team || '', 'team').sort((a, b) => b.hr - a.hr), [analysisRows])
   const playerAttackStats = useMemo(() => makeGroup(analysisRows, (r) => r.attacker_name || '', 'player').sort((a, b) => b.hr - a.hr), [analysisRows])
   const armyStats = useMemo(() => makeGroup(analysisRows, (r) => r.army || '', 'army').sort((a, b) => b.attacks - a.attacks), [analysisRows])
   const baseStats = useMemo(() => makeGroup(analysisRows, (r) => r.base_style || '', 'base').sort((a, b) => a.hr - b.hr), [analysisRows])
   const spellStats = useMemo(() => makeGroup(analysisRows, (r) => r.spell_tower || '', 'spell').sort((a, b) => a.hr - b.hr), [analysisRows])
-  const baseStatsReliable = useMemo(() => baseStats.filter(x => x.attacks >= predictorMinSample), [baseStats, predictorMinSample])
-  const spellStatsReliable = useMemo(() => spellStats.filter(x => x.attacks >= predictorMinSample), [spellStats, predictorMinSample])
+  const baseStatsReliable = useMemo(() => {
+    const gaMap = new Map<string, ReturnType<typeof groundAirSplit>>()
+    analysisRows.forEach(r => {
+      const k = r.base_style || ''
+      if (!gaMap.has(k)) gaMap.set(k, groundAirSplit([]))
+    })
+    // Rebuild per-base ground/air split from analysisRows
+    const baseRows = new Map<string, Attack[]>()
+    analysisRows.forEach(r => {
+      const k = r.base_style || ''
+      if (!baseRows.has(k)) baseRows.set(k, [])
+      baseRows.get(k)!.push(r)
+    })
+    return baseStats.filter(x => x.attacks >= predictorMinSample).map(b => {
+      const split = groundAirSplit(baseRows.get(b.base) || [])
+      return { ...b, ground_hr: split.ground.hr, ground_n: split.ground.attacks, air_hr: split.air.hr, air_n: split.air.attacks }
+    })
+  }, [baseStats, predictorMinSample, analysisRows])
+
+  const spellStatsReliable = useMemo(() => {
+    const spellRows = new Map<string, Attack[]>()
+    analysisRows.forEach(r => {
+      const k = r.spell_tower || ''
+      if (!spellRows.has(k)) spellRows.set(k, [])
+      spellRows.get(k)!.push(r)
+    })
+    return spellStats.filter(x => x.attacks >= predictorMinSample).map(s => {
+      const split = groundAirSplit(spellRows.get(s.spell) || [])
+      return { ...s, ground_hr: split.ground.hr, ground_n: split.ground.attacks, air_hr: split.air.hr, air_n: split.air.attacks }
+    })
+  }, [spellStats, predictorMinSample, analysisRows])
 
   // --- Ground / Air breakdowns ----------------------------------------------------------------
   // Overview-level split: how the whole filtered offense performs on the ground vs in the air.
@@ -474,8 +523,24 @@ export default function Home() {
     const baseList = Array.from(new Set(combos.map((c) => c.base_style))).sort()
     const spellList = Array.from(new Set(combos.map((c) => c.spell_tower))).sort()
     const lookup = new Map(combos.map((c) => [`${c.base_style}|||${c.spell_tower}`, c]))
-    return { baseList, spellList, lookup }
-  }, [combos])
+
+    // Ground/Air split per cell: for each base+spell combination, compute HR and attack count
+    // separately for ground and air armies. This lets each heatmap cell show not just "is this
+    // easy to triple?" but also "which army type does it better?"
+    const gaLookup = new Map<string, { ground: ReturnType<typeof groundAirSplit>['ground'], air: ReturnType<typeof groundAirSplit>['air'] }>()
+    const cellRows = new Map<string, Attack[]>()
+    analysisRows.forEach(r => {
+      const key = `${r.base_style || ''}|||${r.spell_tower || ''}`
+      if (!cellRows.has(key)) cellRows.set(key, [])
+      cellRows.get(key)!.push(r)
+    })
+    cellRows.forEach((rows, key) => {
+      const split = groundAirSplit(rows)
+      gaLookup.set(key, { ground: split.ground, air: split.air })
+    })
+
+    return { baseList, spellList, lookup, gaLookup }
+  }, [combos, analysisRows])
 
   const selectedTeamRows = teamFilter === 'all' ? filtered : filtered.filter((r) => r.attacker_team === teamFilter || r.defender_team === teamFilter)
   const selectedPlayerRows = playerFilter === 'all' ? filtered : filtered.filter((r) => r.attacker_name === playerFilter || r.defender_name === playerFilter)
@@ -713,16 +778,23 @@ export default function Home() {
             </section>
 
             <section className="card p-5">
-              <SectionLabel sub={`Base styles ranked from lowest to highest hit rate conceded. Only combos with ${predictorMinSample}+ attacks are shown — small samples are too noisy to rank reliably.`}>Hit Rate by Base Style</SectionLabel>
-              <div className="h-[340px]">
+              <SectionLabel sub={`Each base style's hit rate broken down by army type (Ground vs Air). A tall green bar means that type struggles to triple that design; a tall red/amber bar means it converts well. Min ${predictorMinSample}+ total attacks.`}>Hit Rate by Base Style — Ground vs Air</SectionLabel>
+              <div className="h-[380px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={baseStatsReliable.map(b => ({ ...b, label: titleSafe(b.base) }))} layout="vertical" margin={{ left: 10, right: 70, top: 5, bottom: 5 }}>
+                  <BarChart data={baseStatsReliable.map(b => ({ ...b, label: titleSafe(b.base) }))} layout="vertical" margin={{ left: 10, right: 60, top: 5, bottom: 5 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={chartC.line} horizontal={false} />
                     <XAxis type="number" stroke={chartC.steel} domain={[0, 100]} unit="%" />
                     <YAxis dataKey="label" type="category" stroke={chartC.steel} width={130} />
-                    <Tooltip contentStyle={chartTs.style} labelStyle={chartTs.labelStyle} itemStyle={chartTs.itemStyle} formatter={(v: any, n: any, p: any) => [`${v}% (n=${p.payload.attacks})`, 'HR']} />
-                    <Bar dataKey="hr" name="HR" fill="#22B07D" radius={[0, 6, 6, 0]}>
-                      <LabelList dataKey="hr" position="right" formatter={(v: any) => `${v}%`} fill={chartC.ink} fontFamily="var(--font-mono)" fontSize={11} />
+                    <Tooltip contentStyle={chartTs.style} labelStyle={chartTs.labelStyle} itemStyle={chartTs.itemStyle} formatter={(v: any, name: string, p: any) => {
+                      const n = name === 'Ground HR' ? p.payload.ground_n : p.payload.air_n
+                      return [`${v}% (n=${n})`, name]
+                    }} />
+                    <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: chartC.ink }} />
+                    <Bar dataKey="ground_hr" name="Ground HR" fill="#C9963F" radius={[0, 4, 4, 0]}>
+                      <LabelList dataKey="ground_hr" position="right" formatter={(v: any) => v > 0 ? `${v}%` : ''} fill={chartC.ink} fontFamily="var(--font-mono)" fontSize={10} />
+                    </Bar>
+                    <Bar dataKey="air_hr" name="Air HR" fill="#4FA3E8" radius={[0, 4, 4, 0]}>
+                      <LabelList dataKey="air_hr" position="right" formatter={(v: any) => v > 0 ? `${v}%` : ''} fill={chartC.ink} fontFamily="var(--font-mono)" fontSize={10} />
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
@@ -731,17 +803,20 @@ export default function Home() {
             </section>
 
             <section className="card p-5">
-              <SectionLabel sub={`Spell tower setups ranked from lowest to highest hit rate conceded. Only combos with ${predictorMinSample}+ attacks are shown.`}>Hit Rate by Spell Tower</SectionLabel>
+              <SectionLabel sub={`Each spell tower setup's hit rate by army type. Tells you whether ground or air armies generally convert better against a given tower configuration. Min ${predictorMinSample}+ total attacks.`}>Hit Rate by Spell Tower — Ground vs Air</SectionLabel>
               <div className="h-[300px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={spellStatsReliable.map(s => ({ ...s, label: titleSafe(s.spell) }))} layout="vertical" margin={{ left: 10, right: 70, top: 5, bottom: 5 }}>
+                  <BarChart data={spellStatsReliable.map(s => ({ ...s, label: titleSafe(s.spell) }))} layout="vertical" margin={{ left: 10, right: 60, top: 5, bottom: 5 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={chartC.line} horizontal={false} />
                     <XAxis type="number" stroke={chartC.steel} domain={[0, 100]} unit="%" />
                     <YAxis dataKey="label" type="category" stroke={chartC.steel} width={130} />
-                    <Tooltip contentStyle={chartTs.style} labelStyle={chartTs.labelStyle} itemStyle={chartTs.itemStyle} formatter={(v: any, n: any, p: any) => [`${v}% (n=${p.payload.attacks})`, 'HR']} />
-                    <Bar dataKey="hr" name="HR" fill="#0EC6E0" radius={[0, 6, 6, 0]}>
-                      <LabelList dataKey="hr" position="right" formatter={(v: any) => `${v}%`} fill={chartC.ink} fontFamily="var(--font-mono)" fontSize={11} />
-                    </Bar>
+                    <Tooltip contentStyle={chartTs.style} labelStyle={chartTs.labelStyle} itemStyle={chartTs.itemStyle} formatter={(v: any, name: string, p: any) => {
+                      const n = name === 'Ground HR' ? p.payload.ground_n : p.payload.air_n
+                      return [`${v}% (n=${n})`, name]
+                    }} />
+                    <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: chartC.ink }} />
+                    <Bar dataKey="ground_hr" name="Ground HR" fill="#C9963F" radius={[0, 4, 4, 0]} />
+                    <Bar dataKey="air_hr" name="Air HR" fill="#4FA3E8" radius={[0, 4, 4, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -789,7 +864,7 @@ export default function Home() {
                 <Shield className="h-4 w-4 text-magenta" />
                 <h2 className="font-display text-lg font-semibold uppercase tracking-wide text-ink">Tactical Combo Map</h2>
               </div>
-              <p className="mb-4 text-sm text-steel">Green = solid defense (hard to triple). Red = vulnerable. Each cell shows HR, sample size, and average stars. All combos in the data are shown here regardless of sample size.</p>
+              <p className="mb-4 text-sm text-steel">Green = solid defense (hard to triple). Red = vulnerable. Each cell shows the overall HR plus a Ground / Air breakdown — <span className="font-semibold text-ground">G</span> = ground army HR, <span className="font-semibold text-air">A</span> = air army HR, with n= sample size.</p>
               <div className="overflow-x-auto">
                 <table className="w-full border-separate border-spacing-2 text-sm">
                   <thead>
@@ -804,12 +879,29 @@ export default function Home() {
                         <td className="whitespace-nowrap font-display font-semibold text-ink">{titleSafe(b)}</td>
                         {heatmap.spellList.map((s) => {
                           const c = heatmap.lookup.get(`${b}|||${s}`)
+                          const ga = heatmap.gaLookup.get(`${b}|||${s}`)
+                          const groundDominates = ga && ga.ground.attacks >= 3 && ga.air.attacks >= 3 && ga.ground.hr > ga.air.hr + 10
+                          const airDominates = ga && ga.ground.attacks >= 3 && ga.air.attacks >= 3 && ga.air.hr > ga.ground.hr + 10
                           return (
-                            <td key={s} className={`rounded-lg border p-3 text-center ${getCellClass(c?.hr)}`}>
+                            <td key={s} className={`rounded-lg border p-2 text-center ${getCellClass(c?.hr)}`}>
                               {c ? (
                                 <>
-                                  <div className="font-mono text-lg font-bold">{c.hr}%</div>
-                                  <div className="text-[10px] opacity-70">n={c.attacks} · {c.avg_stars}⭐</div>
+                                  <div className="flex items-center justify-center gap-1">
+                                    <span className="font-mono text-base font-bold">{c.hr}%</span>
+                                    {groundDominates && <span className="rounded bg-ground/20 px-1 font-mono text-[10px] font-bold text-ground">↑G</span>}
+                                    {airDominates && <span className="rounded bg-air/20 px-1 font-mono text-[10px] font-bold text-air">↑A</span>}
+                                  </div>
+                                  <div className="mt-1 text-[10px] opacity-60">n={c.attacks} · {c.avg_stars}⭐</div>
+                                  {ga && (ga.ground.attacks > 0 || ga.air.attacks > 0) && (
+                                    <div className="mt-1.5 flex justify-center gap-2">
+                                      {ga.ground.attacks > 0 && (
+                                        <span className="font-mono text-[10px] font-semibold text-ground">G:{ga.ground.hr}%<span className="opacity-60"> n={ga.ground.attacks}</span></span>
+                                      )}
+                                      {ga.air.attacks > 0 && (
+                                        <span className="font-mono text-[10px] font-semibold text-air">A:{ga.air.hr}%<span className="opacity-60"> n={ga.air.attacks}</span></span>
+                                      )}
+                                    </div>
+                                  )}
                                 </>
                               ) : '—'}
                             </td>
@@ -839,7 +931,7 @@ export default function Home() {
               <DataTable
                 title="Full Combo Ranking (all sample sizes)"
                 rows={rankingAll.slice(0, comboTableExp.count)}
-                columns={[['combo','Combo'],['attacks','Attacks'],['triples','Triples'],['hr','HR %'],['avg_stars','Avg ⭐'],['avg_percent','Avg %']]}
+                columns={[['combo','Combo'],['attacks','n'],['hr','HR %'],['ground_hr','Ground HR'],['air_hr','Air HR'],['dominant','Best Type'],['avg_stars','Avg ⭐'],['avg_percent','Avg %']]}
               />
               <ShowMoreControl visibleCount={comboTableExp.count} total={rankingAll.length} onExpand={comboTableExp.expand} />
             </div>
@@ -935,19 +1027,54 @@ export default function Home() {
                   <SectionLabel sub={`${teamFilter}'s hit rate when attacking on the ground vs in the air.`}>{`${teamFilter} · Ground vs Air`}</SectionLabel>
                   {(() => {
                     const split = groundAirSplit(teamAttackRows)
+                    // Per-base breakdown for this team: which base style is easier for ground vs air
+                    const baseRows2 = new Map<string, Attack[]>()
+                    teamAttackRows.forEach(r => {
+                      const k = r.base_style || 'Unknown'
+                      if (!baseRows2.has(k)) baseRows2.set(k, [])
+                      baseRows2.get(k)!.push(r)
+                    })
+                    const teamBaseGA = Array.from(baseRows2.entries())
+                      .map(([base, rows]) => {
+                        const s = groundAirSplit(rows)
+                        return { label: titleSafe(base), ground_hr: s.ground.hr, air_hr: s.air.hr, ground_n: s.ground.attacks, air_n: s.air.attacks, total: rows.length }
+                      })
+                      .filter(b => b.total >= 2)
+                      .sort((a, b) => b.total - a.total)
                     return (
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <div className="rounded-lg border border-ground/25 bg-ground/[0.05] p-4">
-                          <p className="chip-ground mb-2"><Mountain className="h-3 w-3" /> Ground</p>
-                          <p className="font-display text-3xl font-semibold text-ink">{split.ground.hr}%</p>
-                          <p className="mt-1 text-xs text-steel">HR · {split.ground.attacks} attacks · {split.ground.avg_stars} avg ⭐</p>
+                      <>
+                        <div className="grid gap-4 md:grid-cols-2 mb-4">
+                          <div className="rounded-lg border border-ground/25 bg-ground/[0.05] p-4">
+                            <p className="chip-ground mb-2"><Mountain className="h-3 w-3" /> Ground</p>
+                            <p className="font-display text-3xl font-semibold text-ink">{split.ground.hr}%</p>
+                            <p className="mt-1 text-xs text-steel">HR · {split.ground.attacks} attacks · {split.ground.avg_stars} avg ⭐</p>
+                          </div>
+                          <div className="rounded-lg border border-air/25 bg-air/[0.05] p-4">
+                            <p className="chip-air mb-2"><Wind className="h-3 w-3" /> Air</p>
+                            <p className="font-display text-3xl font-semibold text-ink">{split.air.hr}%</p>
+                            <p className="mt-1 text-xs text-steel">HR · {split.air.attacks} attacks · {split.air.avg_stars} avg ⭐</p>
+                          </div>
                         </div>
-                        <div className="rounded-lg border border-air/25 bg-air/[0.05] p-4">
-                          <p className="chip-air mb-2"><Wind className="h-3 w-3" /> Air</p>
-                          <p className="font-display text-3xl font-semibold text-ink">{split.air.hr}%</p>
-                          <p className="mt-1 text-xs text-steel">HR · {split.air.attacks} attacks · {split.air.avg_stars} avg ⭐</p>
-                        </div>
-                      </div>
+                        {teamBaseGA.length > 0 && (
+                          <div className="h-[280px]">
+                            <p className="mb-2 font-mono text-[11px] uppercase tracking-wider text-steel">Ground vs Air HR — by base style attacked</p>
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart data={teamBaseGA} layout="vertical" margin={{ left: 10, right: 50, top: 5, bottom: 5 }}>
+                                <CartesianGrid strokeDasharray="3 3" stroke={chartC.line} horizontal={false} />
+                                <XAxis type="number" stroke={chartC.steel} domain={[0, 100]} unit="%" />
+                                <YAxis dataKey="label" type="category" stroke={chartC.steel} width={110} />
+                                <Tooltip contentStyle={chartTs.style} labelStyle={chartTs.labelStyle} itemStyle={chartTs.itemStyle} formatter={(v: any, name: string, p: any) => {
+                                  const n = name === 'Ground HR' ? p.payload.ground_n : p.payload.air_n
+                                  return n > 0 ? [`${v}% (n=${n})`, name] : ['No data', name]
+                                }} />
+                                <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: chartC.ink }} />
+                                <Bar dataKey="ground_hr" name="Ground HR" fill="#C9963F" radius={[0, 4, 4, 0]} />
+                                <Bar dataKey="air_hr" name="Air HR" fill="#4FA3E8" radius={[0, 4, 4, 0]} />
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        )}
+                      </>
                     )
                   })()}
                 </section>
