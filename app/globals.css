@@ -10,9 +10,6 @@
    tailwind.config.ts, so every existing utility class (bg-bg, text-ink, border-line, etc.)
    automatically follows the active theme — no dark: variants needed throughout page.tsx. */
 :root {
-  --font-display: Arial, Helvetica, sans-serif;
-  --font-body: Arial, Helvetica, sans-serif;
-  --font-mono: Consolas, Menlo, monospace;
   --c-bg: 244 246 250;
   --c-panel: 255 255 255;
   --c-soft: 240 242 247;
