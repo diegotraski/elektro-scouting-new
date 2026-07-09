@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Attack } from '@/lib/types'
-import { comboStats, filteredAttacks, title, classifyAttackType } from '@/lib/analytics'
+import { comboStats, filteredAttacks, allNormalizedAttacks, title, classifyAttackType } from '@/lib/analytics'
 import {
   BarChart,
   Bar,
@@ -149,6 +149,24 @@ function getTooltipStyle(theme: 'dark' | 'light') {
     labelStyle: { color: c.ink, fontWeight: 600 },
     itemStyle: { color: c.ink },
   }
+}
+
+/** Compact on/off toggle switch with a label. Used for optional overlays (Ground/Air) and
+ * filters (Top Teams Only) that enrich the view but are off by default to keep it clean. */
+function Toggle({ label, checked, onChange, sub }: { label: string; checked: boolean; onChange: (v: boolean) => void; sub?: string }) {
+  return (
+    <label className="flex cursor-pointer items-center gap-2.5 select-none">
+      <div className="relative">
+        <input type="checkbox" className="sr-only" checked={checked} onChange={e => onChange(e.target.checked)} />
+        <div className={`h-5 w-9 rounded-full transition-colors ${checked ? 'bg-cyan' : 'bg-line'}`} />
+        <div className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-4' : 'translate-x-0.5'}`} />
+      </div>
+      <div>
+        <p className="font-mono text-[11px] font-semibold uppercase tracking-wider text-ink/80">{label}</p>
+        {sub && <p className="text-[10px] text-steel">{sub}</p>}
+      </div>
+    </label>
+  )
 }
 
 /** "Show more" control used under rankings/charts: starts small, expands in steps, with an explicit step count visible. */
@@ -358,6 +376,16 @@ export default function Home() {
   const [uploading, setUploading] = useState(false)
   const [query, setQuery] = useState('')
   const [predictorMinSample, setPredictorMinSample] = useState(DEFAULT_MIN_SAMPLE)
+  // Switch: show Ground/Air overlay on charts/heatmap (off by default to keep stats clean)
+  const [showGroundAir, setShowGroundAir] = useState(false)
+  // Switch: restrict all offensive stats to "top teams" only
+  const [topTeamsOnly, setTopTeamsOnly] = useState(false)
+  // Min sample for the army-vs-base analysis table
+  const [armyBaseMinSample, setArmyBaseMinSample] = useState(3)
+  // Min attacks to show a cell in the heatmap (cells with fewer attacks are hidden as noise)
+  const [heatmapMin, setHeatmapMin] = useState(2)
+  // Which teams count as "top" — user can type names from the selector
+  const [topTeamsList, setTopTeamsList] = useState<string[]>([])
 
   async function loadData() {
     setLoading(true)
@@ -371,6 +399,20 @@ export default function Home() {
   }, [])
 
   const cleanRows = useMemo(() => filteredAttacks(rows), [rows])
+
+  // --- Row loss diagnostics (shown on the Data page) ----------------------------------------
+  // allNorm: all rows after field normalization only (no stream/base/spell filter).
+  // Comparing counts lets the user see exactly why some rows from the Excel are not appearing.
+  const rowDiagnostics = useMemo(() => {
+    const allNorm = allNormalizedAttacks(rows)
+    const noStream = allNorm.filter(r => r.stream !== 'yes')
+    const hasStream = allNorm.filter(r => r.stream === 'yes')
+    const missingBase = hasStream.filter(r => !r.base_style)
+    const missingSpell = hasStream.filter(r => !r.spell_tower)
+    const missingStars = hasStream.filter(r => r.stars === null || r.stars === undefined)
+    return { total: rows.length, noStream: noStream.length, missingBase: missingBase.length, missingSpell: missingSpell.length, missingStars: missingStars.length, usable: cleanRows.length }
+  }, [rows, cleanRows])
+
   const dateBounds = useMemo(() => {
     const dates = cleanRows.map((r) => r.date).filter(Boolean).sort()
     return { min: dates[0] || '', max: dates[dates.length - 1] || '' }
@@ -399,14 +441,24 @@ export default function Home() {
 
   const total = filtered.length
 
+  // Top-teams filter: when enabled, restrict offensive analysis to attacks made by teams in
+  // topTeamsList only — useful when you want meta stats that exclude low-level opponents whose
+  // attack patterns would distort the picture of what top-level play looks like.
+  const topTeamsSet = useMemo(() => new Set(topTeamsList.map(t => t.toLowerCase())), [topTeamsList])
+  const filteredByTopTeams = useMemo(() => {
+    if (!topTeamsOnly || topTeamsList.length === 0) return filtered
+    return filtered.filter(r => topTeamsSet.has((r.attacker_team || '').toLowerCase()))
+  }, [filtered, topTeamsOnly, topTeamsList, topTeamsSet])
+
   // Role isolation: when a team/player is selected, every "general" stat must come from attacks
   // THEY made, never attacks made against them (this was the reported critical bug — fixed here
   // by always deriving general stats from analysisRows, not from `filtered`).
   const analysisRows = useMemo(() => {
+    const base = topTeamsOnly && topTeamsList.length > 0 ? filteredByTopTeams : filtered
     if (teamFilter !== 'all') return filtered.filter((r) => r.attacker_team === teamFilter)
     if (playerFilter !== 'all') return filtered.filter((r) => r.attacker_name === playerFilter)
-    return filtered
-  }, [filtered, teamFilter, playerFilter])
+    return base
+  }, [filtered, filteredByTopTeams, teamFilter, playerFilter, topTeamsOnly, topTeamsList])
 
   const analysisTotal = analysisRows.length
   const triples = analysisRows.filter((r) => Number(r.stars) === 3).length
@@ -519,6 +571,55 @@ export default function Home() {
     return armyStats.map(a => ({ ...a, type: classifyAttackType(a.army) })).sort((a, b) => b.attacks - a.attacks)
   }, [armyStats])
 
+  // --- Army vs Base analysis ----------------------------------------------------------------
+  // For each base style, which army has the highest HR? This directly answers the question
+  // "what should I use to attack Anti-3?" etc. Only combos with armyBaseMinSample+ attacks
+  // per army+base pair are included so low-sample outliers don't dominate the ranking.
+  const armyVsBase = useMemo(() => {
+    // Group rows by base_style x army
+    const map = new Map<string, Attack[]>()
+    analysisRows.forEach(r => {
+      if (!r.base_style || !r.army) return
+      const key = `${r.base_style}|||${r.army}`
+      if (!map.has(key)) map.set(key, [])
+      map.get(key)!.push(r)
+    })
+    // Build rows: base, army, attacks, triples, hr, avg_stars, type
+    const rows: any[] = []
+    map.forEach((items, key) => {
+      if (items.length < armyBaseMinSample) return
+      const [base_style, army] = key.split('|||')
+      const attacks = items.length
+      const triples = items.filter(x => Number(x.stars) === 3).length
+      const avg_stars = +(items.reduce((s, x) => s + Number(x.stars || 0), 0) / attacks).toFixed(2)
+      const avg_percent = +(items.reduce((s, x) => s + Number(x.percent || 0), 0) / attacks).toFixed(1)
+      rows.push({
+        base: title(base_style),
+        army: title(army),
+        type: classifyAttackType(army) === 'ground' ? 'Ground' : 'Air',
+        attacks,
+        triples,
+        hr: +(triples / attacks * 100).toFixed(1),
+        avg_stars,
+        avg_percent,
+        base_style,
+      })
+    })
+    // Sort: for each base, rank by HR desc within the base group
+    return rows.sort((a, b) => a.base_style.localeCompare(b.base_style) || b.hr - a.hr)
+  }, [analysisRows, armyBaseMinSample])
+
+  // Best army per base (top 1 by HR within each base, for the summary cards)
+  const bestArmyPerBase = useMemo(() => {
+    const byBase = new Map<string, typeof armyVsBase[0]>()
+    armyVsBase.forEach(row => {
+      if (!byBase.has(row.base_style) || row.hr > byBase.get(row.base_style)!.hr) {
+        byBase.set(row.base_style, row)
+      }
+    })
+    return Array.from(byBase.values()).sort((a, b) => b.attacks - a.attacks)
+  }, [armyVsBase])
+
   const heatmap = useMemo(() => {
     const baseList = Array.from(new Set(combos.map((c) => c.base_style))).sort()
     const spellList = Array.from(new Set(combos.map((c) => c.spell_tower))).sort()
@@ -618,12 +719,17 @@ export default function Home() {
     const workbook = XLSX.read(buffer)
     const sheet = workbook.Sheets[workbook.SheetNames[0]]
     const json = XLSX.utils.sheet_to_json(sheet)
-    const payload = json.map(mapRow).filter((r) => r.base_style && r.spell_tower && r.stars !== null && r.stars !== undefined && !Number.isNaN(r.stars))
+    // Store ALL rows from the Excel — do NOT filter by base_style/spell_tower/stars here.
+    // Filtering those fields at upload time silently drops rows that are legitimately missing
+    // a value (e.g. the stream column uses a value other than "yes", or a row has no spell
+    // tower recorded yet). The analytic filter (filteredAttacks) handles that at query time,
+    // and the Data page shows a breakdown of how many rows each filter is dropping.
+    const payload = json.map(mapRow).filter((r) => r.stars !== null && r.stars !== undefined && !Number.isNaN(r.stars))
     await supabase.from('attacks').delete().gte('id', 0)
     const chunkSize = 500
     for (let i = 0; i < payload.length; i += chunkSize) {
       const { error } = await supabase.from('attacks').insert(payload.slice(i, i + chunkSize))
-      if (error) alert(error.message)
+      if (error) { alert(`Insert error at row ${i}: ${error.message}`); break }
     }
     setUploading(false)
     await loadData()
@@ -718,6 +824,41 @@ export default function Home() {
               </p>
             )}
           </div>
+
+          {/* ── Advanced analysis controls ─────────────────────────────────────────── */}
+          <div className="mt-4 flex flex-wrap items-start gap-6 rounded-lg border border-line bg-soft/50 p-4">
+            <Toggle
+              label="Ground / Air overlay"
+              checked={showGroundAir}
+              onChange={setShowGroundAir}
+              sub="Show G/A split on charts and heatmap"
+            />
+            <Toggle
+              label="Top teams only"
+              checked={topTeamsOnly}
+              onChange={setTopTeamsOnly}
+              sub="Restrict offense stats to selected top teams"
+            />
+            {topTeamsOnly && (
+              <div className="flex flex-1 flex-col gap-2 min-w-[220px]">
+                <p className="label-eyebrow">Select top teams</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {teams.map(t => (
+                    <button
+                      key={t}
+                      onClick={() => setTopTeamsList(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t])}
+                      className={`rounded-md px-2.5 py-1 font-mono text-[11px] font-semibold transition ${topTeamsList.includes(t) ? 'bg-cyan text-[#0A0C12]' : 'border border-line bg-panel text-steel hover:border-cyan/40 hover:text-ink'}`}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
+                {topTeamsList.length > 0 && (
+                  <p className="font-mono text-[10px] text-steel">{topTeamsList.length} team{topTeamsList.length > 1 ? 's' : ''} selected · {analysisTotal} attacks in scope</p>
+                )}
+              </div>
+            )}
+          </div>
         </section>
 
         <section className="grid gap-4 md:grid-cols-4">
@@ -778,24 +919,29 @@ export default function Home() {
             </section>
 
             <section className="card p-5">
-              <SectionLabel sub={`Each base style's hit rate broken down by army type (Ground vs Air). A tall green bar means that type struggles to triple that design; a tall red/amber bar means it converts well. Min ${predictorMinSample}+ total attacks.`}>Hit Rate by Base Style — Ground vs Air</SectionLabel>
+              <SectionLabel sub={`Min ${predictorMinSample}+ attacks. ${showGroundAir ? 'Showing Ground vs Air split — toggle off to see single HR bar.' : 'Enable Ground/Air overlay in the filter bar to see the G/A split.'}`}>Hit Rate by Base Style{showGroundAir ? ' — Ground vs Air' : ''}</SectionLabel>
               <div className="h-[380px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={baseStatsReliable.map(b => ({ ...b, label: titleSafe(b.base) }))} layout="vertical" margin={{ left: 10, right: 60, top: 5, bottom: 5 }}>
+                  <BarChart data={baseStatsReliable.map(b => ({ ...b, label: titleSafe(b.base) }))} layout="vertical" margin={{ left: 10, right: showGroundAir ? 20 : 60, top: 5, bottom: 5 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={chartC.line} horizontal={false} />
                     <XAxis type="number" stroke={chartC.steel} domain={[0, 100]} unit="%" />
                     <YAxis dataKey="label" type="category" stroke={chartC.steel} width={130} />
                     <Tooltip contentStyle={chartTs.style} labelStyle={chartTs.labelStyle} itemStyle={chartTs.itemStyle} formatter={(v: any, name: string, p: any) => {
-                      const n = name === 'Ground HR' ? p.payload.ground_n : p.payload.air_n
-                      return [`${v}% (n=${n})`, name]
+                      if (name === 'Ground HR') return [`${v}% (n=${p.payload.ground_n})`, 'Ground HR']
+                      if (name === 'Air HR') return [`${v}% (n=${p.payload.air_n})`, 'Air HR']
+                      return [`${v}% (n=${p.payload.attacks})`, 'Overall HR']
                     }} />
-                    <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: chartC.ink }} />
-                    <Bar dataKey="ground_hr" name="Ground HR" fill="#C9963F" radius={[0, 4, 4, 0]}>
-                      <LabelList dataKey="ground_hr" position="right" formatter={(v: any) => v > 0 ? `${v}%` : ''} fill={chartC.ink} fontFamily="var(--font-mono)" fontSize={10} />
-                    </Bar>
-                    <Bar dataKey="air_hr" name="Air HR" fill="#4FA3E8" radius={[0, 4, 4, 0]}>
-                      <LabelList dataKey="air_hr" position="right" formatter={(v: any) => v > 0 ? `${v}%` : ''} fill={chartC.ink} fontFamily="var(--font-mono)" fontSize={10} />
-                    </Bar>
+                    {showGroundAir && <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: chartC.ink }} />}
+                    {showGroundAir ? (
+                      <>
+                        <Bar dataKey="ground_hr" name="Ground HR" fill="#C9963F" radius={[0, 4, 4, 0]} />
+                        <Bar dataKey="air_hr" name="Air HR" fill="#4FA3E8" radius={[0, 4, 4, 0]} />
+                      </>
+                    ) : (
+                      <Bar dataKey="hr" name="Overall HR" fill="#22B07D" radius={[0, 6, 6, 0]}>
+                        <LabelList dataKey="hr" position="right" formatter={(v: any) => `${v}%`} fill={chartC.ink} fontFamily="var(--font-mono)" fontSize={11} />
+                      </Bar>
+                    )}
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -803,20 +949,29 @@ export default function Home() {
             </section>
 
             <section className="card p-5">
-              <SectionLabel sub={`Each spell tower setup's hit rate by army type. Tells you whether ground or air armies generally convert better against a given tower configuration. Min ${predictorMinSample}+ total attacks.`}>Hit Rate by Spell Tower — Ground vs Air</SectionLabel>
+              <SectionLabel sub={`Min ${predictorMinSample}+ attacks. ${showGroundAir ? 'Showing Ground vs Air split.' : 'Enable Ground/Air overlay in the filter bar to see the G/A split.'}`}>Hit Rate by Spell Tower{showGroundAir ? ' — Ground vs Air' : ''}</SectionLabel>
               <div className="h-[300px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={spellStatsReliable.map(s => ({ ...s, label: titleSafe(s.spell) }))} layout="vertical" margin={{ left: 10, right: 60, top: 5, bottom: 5 }}>
+                  <BarChart data={spellStatsReliable.map(s => ({ ...s, label: titleSafe(s.spell) }))} layout="vertical" margin={{ left: 10, right: showGroundAir ? 20 : 60, top: 5, bottom: 5 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={chartC.line} horizontal={false} />
                     <XAxis type="number" stroke={chartC.steel} domain={[0, 100]} unit="%" />
                     <YAxis dataKey="label" type="category" stroke={chartC.steel} width={130} />
                     <Tooltip contentStyle={chartTs.style} labelStyle={chartTs.labelStyle} itemStyle={chartTs.itemStyle} formatter={(v: any, name: string, p: any) => {
-                      const n = name === 'Ground HR' ? p.payload.ground_n : p.payload.air_n
-                      return [`${v}% (n=${n})`, name]
+                      if (name === 'Ground HR') return [`${v}% (n=${p.payload.ground_n})`, 'Ground HR']
+                      if (name === 'Air HR') return [`${v}% (n=${p.payload.air_n})`, 'Air HR']
+                      return [`${v}% (n=${p.payload.attacks})`, 'Overall HR']
                     }} />
-                    <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: chartC.ink }} />
-                    <Bar dataKey="ground_hr" name="Ground HR" fill="#C9963F" radius={[0, 4, 4, 0]} />
-                    <Bar dataKey="air_hr" name="Air HR" fill="#4FA3E8" radius={[0, 4, 4, 0]} />
+                    {showGroundAir && <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: chartC.ink }} />}
+                    {showGroundAir ? (
+                      <>
+                        <Bar dataKey="ground_hr" name="Ground HR" fill="#C9963F" radius={[0, 4, 4, 0]} />
+                        <Bar dataKey="air_hr" name="Air HR" fill="#4FA3E8" radius={[0, 4, 4, 0]} />
+                      </>
+                    ) : (
+                      <Bar dataKey="hr" name="Overall HR" fill="#0EC6E0" radius={[0, 6, 6, 0]}>
+                        <LabelList dataKey="hr" position="right" formatter={(v: any) => `${v}%`} fill={chartC.ink} fontFamily="var(--font-mono)" fontSize={11} />
+                      </Bar>
+                    )}
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -833,6 +988,37 @@ export default function Home() {
                 <ShowMoreControl visibleCount={rankingDefExp.count} total={rankingReliableDefense.length} onExpand={rankingDefExp.expand} />
               </div>
             </section>
+
+            {bestArmyPerBase.length > 0 && (
+              <section className="card p-5">
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                  <SectionLabel sub={`Top army per base style (min ${armyBaseMinSample} attacks). For the full breakdown go to Combo Map.`}>Best Army to Attack Each Base</SectionLabel>
+                  <div className="flex items-center gap-1.5">
+                    <label className="font-mono text-[11px] uppercase tracking-wider text-steel">Min</label>
+                    <select className="input !py-1 !text-xs !px-2" value={armyBaseMinSample} onChange={e => setArmyBaseMinSample(Number(e.target.value))}>
+                      {[2, 3, 5, 10, 15].map(n => <option key={n} value={n}>{n}+</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+                  {bestArmyPerBase.map(row => (
+                    <div key={row.base_style} className="flex items-center gap-3 rounded-lg border border-line bg-soft/50 p-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="label-eyebrow truncate">{row.base}</p>
+                        <p className="mt-1 truncate font-display font-semibold text-ink">{row.army}</p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="font-mono text-lg font-bold text-cyan">{row.hr}%</p>
+                        <span className={row.type === 'Ground' ? 'chip-ground' : 'chip-air'}>
+                          {row.type === 'Ground' ? <Mountain className="h-3 w-3" /> : <Wind className="h-3 w-3" />}
+                          {row.type}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
 
             <section className="card p-5">
               <SectionLabel sub="Monthly hit rate trend across all attacks in the filtered dataset.">Meta Evolution Over Time</SectionLabel>
@@ -860,11 +1046,22 @@ export default function Home() {
         {page === 'combos' && (
           <>
             <section className="card p-5">
-              <div className="mb-1 flex items-center gap-2">
-                <Shield className="h-4 w-4 text-magenta" />
-                <h2 className="font-display text-lg font-semibold uppercase tracking-wide text-ink">Tactical Combo Map</h2>
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Shield className="h-4 w-4 text-magenta" />
+                  <h2 className="font-display text-lg font-semibold uppercase tracking-wide text-ink">Tactical Combo Map</h2>
+                </div>
+                <div className="flex items-center gap-3">
+                  <Toggle label="G/A overlay" checked={showGroundAir} onChange={setShowGroundAir} sub="Show ground/air split per cell" />
+                  <div className="flex items-center gap-1.5">
+                    <label className="font-mono text-[11px] uppercase tracking-wider text-steel">Min attacks</label>
+                    <select className="input !py-1 !text-xs !px-2" value={heatmapMin} onChange={e => setHeatmapMin(Number(e.target.value))}>
+                      {[1, 2, 5, 10].map(n => <option key={n} value={n}>{n}+</option>)}
+                    </select>
+                  </div>
+                </div>
               </div>
-              <p className="mb-4 text-sm text-steel">Green = solid defense (hard to triple). Red = vulnerable. Each cell shows the overall HR plus a Ground / Air breakdown — <span className="font-semibold text-ground">G</span> = ground army HR, <span className="font-semibold text-air">A</span> = air army HR, with n= sample size.</p>
+              <p className="mb-4 text-sm text-steel">Green = solid defense (hard to triple). Red = vulnerable. {showGroundAir ? 'G = Ground HR, A = Air HR.' : 'Enable G/A overlay above to see the split.'}</p>
               <div className="overflow-x-auto">
                 <table className="w-full border-separate border-spacing-2 text-sm">
                   <thead>
@@ -880,11 +1077,11 @@ export default function Home() {
                         {heatmap.spellList.map((s) => {
                           const c = heatmap.lookup.get(`${b}|||${s}`)
                           const ga = heatmap.gaLookup.get(`${b}|||${s}`)
-                          const groundDominates = ga && ga.ground.attacks >= 3 && ga.air.attacks >= 3 && ga.ground.hr > ga.air.hr + 10
-                          const airDominates = ga && ga.ground.attacks >= 3 && ga.air.attacks >= 3 && ga.air.hr > ga.ground.hr + 10
+                          const groundDominates = showGroundAir && ga && ga.ground.attacks >= 3 && ga.air.attacks >= 3 && ga.ground.hr > ga.air.hr + 10
+                          const airDominates = showGroundAir && ga && ga.ground.attacks >= 3 && ga.air.attacks >= 3 && ga.air.hr > ga.ground.hr + 10
                           return (
-                            <td key={s} className={`rounded-lg border p-2 text-center ${getCellClass(c?.hr)}`}>
-                              {c ? (
+                            <td key={s} className={`rounded-lg border p-2 text-center ${getCellClass(c && c.attacks >= heatmapMin ? c.hr : null)}`}>
+                              {c && c.attacks >= heatmapMin ? (
                                 <>
                                   <div className="flex items-center justify-center gap-1">
                                     <span className="font-mono text-base font-bold">{c.hr}%</span>
@@ -892,7 +1089,7 @@ export default function Home() {
                                     {airDominates && <span className="rounded bg-air/20 px-1 font-mono text-[10px] font-bold text-air">↑A</span>}
                                   </div>
                                   <div className="mt-1 text-[10px] opacity-60">n={c.attacks} · {c.avg_stars}⭐</div>
-                                  {ga && (ga.ground.attacks > 0 || ga.air.attacks > 0) && (
+                                  {showGroundAir && ga && (ga.ground.attacks > 0 || ga.air.attacks > 0) && (
                                     <div className="mt-1.5 flex justify-center gap-2">
                                       {ga.ground.attacks > 0 && (
                                         <span className="font-mono text-[10px] font-semibold text-ground">G:{ga.ground.hr}%<span className="opacity-60"> n={ga.ground.attacks}</span></span>
@@ -927,6 +1124,52 @@ export default function Home() {
               <SectionLabel sub="Which base styles each attack type (ground/air) struggles most against, by hit rate.">Ground vs Air — by Base Style</SectionLabel>
               <DataTable title="" rows={groundAirByBase.map(b => ({ base: titleSafe(b.base), ground_hr: `${b.ground.hr}% (n=${b.ground.attacks})`, air_hr: `${b.air.hr}% (n=${b.air.attacks})` }))} columns={[['base','Base Style'],['ground_hr','Ground HR'],['air_hr','Air HR']]} />
             </section>
+
+            {/* ── Army vs Base: which army converts best against each base style ── */}
+            <section className="card p-5">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="label-eyebrow">Best Army per Base Style</p>
+                  <p className="mt-1 text-sm text-steel">Which army has the highest HR against each base design. Only army+base combos with {armyBaseMinSample}+ recorded attacks are included.</p>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <label className="font-mono text-[11px] uppercase tracking-wider text-steel">Min attacks</label>
+                  <select className="input !py-1 !text-xs !px-2" value={armyBaseMinSample} onChange={e => setArmyBaseMinSample(Number(e.target.value))}>
+                    {[2, 3, 5, 10, 15].map(n => <option key={n} value={n}>{n}+</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {/* Summary cards: one per base, showing the #1 army */}
+              {bestArmyPerBase.length > 0 ? (
+                <div className="mb-5 grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+                  {bestArmyPerBase.map(row => (
+                    <div key={row.base_style} className="rounded-lg border border-line bg-soft/60 p-4">
+                      <p className="label-eyebrow">{row.base}</p>
+                      <p className="mt-2 font-display text-xl font-semibold text-ink">{row.army}</p>
+                      <div className="mt-1.5 flex items-center gap-2">
+                        <span className={row.type === 'Ground' ? 'chip-ground' : 'chip-air'}>
+                          {row.type === 'Ground' ? <Mountain className="h-3 w-3" /> : <Wind className="h-3 w-3" />}
+                          {row.type}
+                        </span>
+                        <span className="font-mono text-sm font-semibold text-cyan">{row.hr}% HR</span>
+                        <span className="font-mono text-xs text-steel">n={row.attacks}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mb-4 text-sm text-steel">No army+base combo has {armyBaseMinSample}+ attacks yet. Lower the minimum or add more data.</p>
+              )}
+
+              {/* Full ranked table: all army+base combos above min sample */}
+              <DataTable
+                title="Full Army vs Base Ranking"
+                rows={armyVsBase}
+                columns={[['base','Base Style'],['army','Army'],['type','Type'],['attacks','Attacks'],['triples','Triples'],['hr','HR %'],['avg_stars','Avg ⭐'],['avg_percent','Avg %']]}
+              />
+            </section>
+
             <div>
               <DataTable
                 title="Full Combo Ranking (all sample sizes)"
@@ -1158,10 +1401,49 @@ export default function Home() {
         {page === 'data' && (
           <>
             <section className="grid gap-4 md:grid-cols-3">
-              <InsightCard label="Database Status" value={`${rows.length} rows stored`} sub="Current rows in Supabase" />
-              <InsightCard label="Currently Filtered Rows" value={total} sub="After applying global filters" />
-              <InsightCard label="Import Behavior" value="Replace mode" sub="Updating the Excel deletes existing rows first" />
+              <InsightCard label="Rows in Database" value={rows.length} sub="Total rows stored in Supabase" />
+              <InsightCard label="Usable for Analysis" value={rowDiagnostics.usable} sub={`${rows.length - rowDiagnostics.usable} rows excluded by filters`} />
+              <InsightCard label="Currently Filtered" value={total} sub="After applying global filters" />
             </section>
+
+            {/* Row loss breakdown — helps diagnose why rows from the Excel are not appearing */}
+            {rows.length > 0 && (
+              <section className="card p-5">
+                <p className="label-eyebrow mb-3">Row Loss Diagnostics</p>
+                <p className="mb-4 text-sm text-steel">
+                  Breaks down why rows from your Excel end up excluded from the analysis. If you're missing data, this tells you which field to check.
+                </p>
+                <div className="grid gap-3 md:grid-cols-4">
+                  <div className="rounded-lg border border-line bg-soft/50 p-4">
+                    <p className="label-eyebrow">Total uploaded</p>
+                    <p className="mt-1 font-display text-3xl font-semibold text-ink">{rowDiagnostics.total}</p>
+                  </div>
+                  <div className={`rounded-lg border p-4 ${rowDiagnostics.noStream > 0 ? 'border-danger/25 bg-danger/[0.05]' : 'border-line bg-soft/50'}`}>
+                    <p className="label-eyebrow">No Stream = Yes</p>
+                    <p className={`mt-1 font-display text-3xl font-semibold ${rowDiagnostics.noStream > 0 ? 'text-danger' : 'text-ink'}`}>{rowDiagnostics.noStream}</p>
+                    <p className="mt-1 text-xs text-steel">Stream column is not "yes" — these attacks are not counted in stats</p>
+                  </div>
+                  <div className={`rounded-lg border p-4 ${rowDiagnostics.missingBase > 0 ? 'border-ground/25 bg-ground/[0.05]' : 'border-line bg-soft/50'}`}>
+                    <p className="label-eyebrow">Missing Base / Spell</p>
+                    <p className={`mt-1 font-display text-3xl font-semibold ${rowDiagnostics.missingBase > 0 ? 'text-ground' : 'text-ink'}`}>{Math.max(rowDiagnostics.missingBase, rowDiagnostics.missingSpell)}</p>
+                    <p className="mt-1 text-xs text-steel">Have Stream=yes but no base style or spell tower recorded</p>
+                  </div>
+                  <div className="rounded-lg border border-line bg-soft/50 p-4">
+                    <p className="label-eyebrow">Used in Analysis</p>
+                    <p className="mt-1 font-display text-3xl font-semibold text-cyan">{rowDiagnostics.usable}</p>
+                    <p className="mt-1 text-xs text-steel">Rows that pass all filters and contribute to stats</p>
+                  </div>
+                </div>
+                {rowDiagnostics.noStream > 0 && (
+                  <p className="mt-3 flex items-center gap-2 rounded-lg border border-danger/20 bg-danger/[0.04] p-3 text-sm text-danger">
+                    <AlertTriangle className="h-4 w-4 shrink-0" />
+                    {rowDiagnostics.noStream} rows have a Stream value that is not "yes". Check the Stream column in your Excel — accepted values are: yes, y, 1, true, si, oui.
+                  </p>
+                )}
+              </section>
+            )}
+
+            <InsightCard label="Import Behavior" value="Replace mode" sub="Updating the Excel deletes existing rows first" />
             <section className="card p-5">
               <h2 className="mb-2 flex items-center gap-2 font-display text-lg font-semibold uppercase tracking-wide text-ink">
                 <Lock className="h-4 w-4 text-magenta" /> Data Management

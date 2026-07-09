@@ -7,14 +7,29 @@ export function normalizeAttack(a: Attack): Attack {
   let spell_tower = clean(a.spell_tower)
   if (spell_tower === 'poison rage') spell_tower = 'rage poison'
   if (base_style === 'anti 2 asymetrique' || base_style === 'anti 2 asymétrique') base_style = 'anti 2'
-  return { ...a, base_style, spell_tower, stream: clean(a.stream) }
+  // Normalize stream: accept 'yes', 'y', '1', 'true', 'si', 'oui' as truthy.
+  // Previously only 'yes' was accepted, silently dropping rows where the column
+  // was filled with a different truthy value (e.g. 'Yes' before lowercasing,
+  // which normalizeAttack already handles, but also 'y' or '1').
+  const rawStream = clean(a.stream)
+  const stream = ['yes', 'y', '1', 'true', 'si', 'oui'].includes(rawStream) ? 'yes' : rawStream
+  return { ...a, base_style, spell_tower, stream }
 }
 
+/** Returns ALL rows that have been streamed (stream === 'yes') and have the minimum fields
+ * needed for analysis (base_style, spell_tower, stars). Rows missing these fields are still
+ * stored in Supabase — they just don't contribute to combo/HR stats. */
 export function filteredAttacks(rows: Attack[]) {
   return rows
     .map(normalizeAttack)
     .filter(r => r.stream === 'yes')
     .filter(r => r.base_style && r.spell_tower && r.stars !== null && r.stars !== undefined)
+}
+
+/** Same as filteredAttacks but skips the stream filter — useful for counting how many rows
+ * the stream filter is dropping so the user can see it in the UI. */
+export function allNormalizedAttacks(rows: Attack[]) {
+  return rows.map(normalizeAttack)
 }
 
 export function comboStats(rows: Attack[], minAttacks = 0): ComboRow[] {
@@ -32,16 +47,7 @@ export function comboStats(rows: Attack[], minAttacks = 0): ComboRow[] {
     const hr = attacks ? +(triples / attacks * 100).toFixed(1) : 0
     const avg_stars = +(items.reduce((s, x) => s + Number(x.stars || 0), 0) / attacks).toFixed(2)
     const avg_percent = +(items.reduce((s, x) => s + Number(x.percent || 0), 0) / attacks).toFixed(1)
-    return {
-      combo: `${title(base_style)} + ${title(spell_tower)}`,
-      base_style,
-      spell_tower,
-      attacks,
-      triples,
-      hr,
-      avg_stars,
-      avg_percent,
-    }
+    return { combo: `${title(base_style)} + ${title(spell_tower)}`, base_style, spell_tower, attacks, triples, hr, avg_stars, avg_percent }
   }).filter(r => r.attacks >= minAttacks)
 }
 
@@ -50,16 +56,6 @@ export function title(s: string) {
 }
 
 // --- Attack type classification (Ground vs Air) -------------------------------------------
-// Ground if the army name contains any of: RR, Thrower/Throwers, SB, Yeti, or Witch (and its
-// plural Witches). Everything else is classified as Air. This is a naming-convention heuristic
-// over the `army` field, not a separate data source, so it's only as accurate as how armies are
-// named in the spreadsheet.
-//
-// Bugfix: the previous version matched whole tokens only against an exact keyword list that
-// included "throwers" but not the singular "thrower", so an army named e.g. "RR Thrower" (no
-// trailing s) was never flagged as Ground. Switched to substring matching on each whitespace-
-// trimmed token so singular/plural variants (thrower/throwers, witch/witches) both match, while
-// still requiring "sb"/"rr" to be a standalone token (not matched inside an unrelated word).
 const GROUND_SUBSTRINGS = ['thrower', 'yeti', 'witch']
 const GROUND_EXACT_TOKENS = ['rr', 'sb']
 
