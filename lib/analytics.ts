@@ -7,6 +7,9 @@ export function normalizeAttack(a: Attack): Attack {
   let spell_tower = clean(a.spell_tower)
   if (spell_tower === 'poison rage') spell_tower = 'rage poison'
   if (base_style === 'anti 2 asymetrique' || base_style === 'anti 2 asymétrique') base_style = 'anti 2'
+  // "2 poison" is a typo/calligraphy error in the data — it should be "2 poisons".
+  // Normalise it so it doesn't appear as a spurious empty column in the heatmap.
+  if (spell_tower === '2 poison') spell_tower = '2 poisons'
   // Normalize stream: accept 'yes', 'y', '1', 'true', 'si', 'oui' as truthy.
   // Previously only 'yes' was accepted, silently dropping rows where the column
   // was filled with a different truthy value (e.g. 'Yes' before lowercasing,

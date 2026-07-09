@@ -46,9 +46,59 @@ import * as XLSX from 'xlsx'
 
 const PALETTE = ['#0EC6E0', '#E0399E', '#B8862E', '#3B8FD6', '#1A9C6B', '#8C6FD1', '#D8425C', '#6B7488']
 const PAGE_SIZE_STEPS = [5, 10, 20, Infinity]
+
+// Tournament date presets — each entry defines a label and one or more date ranges.
+// Multi-day events (Day 1 + Day 2) use the first day as `from` and the last day as `to`.
+// "Qualifier" and "Final" are the events that matter most; Ladder entries are included
+// for completeness but can be filtered out separately.
+const TOURNAMENT_PRESETS: { label: string; from: string; to: string; type: 'qualifier' | 'final' | 'ladder' | 'lcq' }[] = [
+  // June
+  { label: 'Jun Ladder',     from: '2026-06-03', to: '2026-06-08', type: 'ladder' },
+  { label: 'Jun Qualifier',  from: '2026-06-20', to: '2026-06-21', type: 'qualifier' },
+  { label: 'Jun Final',      from: '2026-06-27', to: '2026-06-28', type: 'final' },
+  // July
+  { label: 'Jul Ladder',     from: '2026-07-01', to: '2026-07-06', type: 'ladder' },
+  { label: 'Jul Qualifier',  from: '2026-07-11', to: '2026-07-12', type: 'qualifier' },
+  { label: 'Jul Final',      from: '2026-07-25', to: '2026-07-26', type: 'final' },
+  // August
+  { label: 'Aug Ladder',     from: '2026-08-05', to: '2026-08-10', type: 'ladder' },
+  { label: 'Aug Qualifier',  from: '2026-08-15', to: '2026-08-16', type: 'qualifier' },
+  { label: 'Aug Final',      from: '2026-08-29', to: '2026-08-30', type: 'final' },
+  // September
+  { label: 'Sep Ladder',     from: '2026-09-02', to: '2026-09-07', type: 'ladder' },
+  { label: 'Sep Qualifier',  from: '2026-09-12', to: '2026-09-13', type: 'qualifier' },
+  { label: 'Sep Final',      from: '2026-09-26', to: '2026-09-27', type: 'final' },
+  // Last Chance
+  { label: 'LCQ',            from: '2026-10-10', to: '2026-10-11', type: 'lcq' },
+]
+
+// Colour coding for the preset pills
+const PRESET_STYLE: Record<string, string> = {
+  qualifier: 'border-cyan/40 bg-cyan/[0.08] text-cyan hover:bg-cyan/[0.15]',
+  final:     'border-magenta/40 bg-magenta/[0.08] text-magenta hover:bg-magenta/[0.15]',
+  ladder:    'border-line bg-soft/60 text-steel hover:border-steel/40 hover:text-ink',
+  lcq:       'border-ground/40 bg-ground/[0.08] text-ground hover:bg-ground/[0.15]',
+}
 // Default minimum sample size for HR rankings/charts. Below this, hit rate is too noisy to act on,
 // so these rows are excluded from ranked charts (but still visible in full data tables).
 const DEFAULT_MIN_SAMPLE = 10
+
+// Top competitive teams — preselected when "Top Teams Only" is toggled on.
+// These are the teams that compete at the highest level and whose attack/defense
+// patterns are most relevant for meta analysis.
+const TOP_TEAMS = [
+  'Carrie Esports',
+  'FuChing NO.1',
+  'Only Realm',
+  'PSYCHO ESPORTS',
+  'RNG x TPM E-Sports',
+  'Repotted Gaming',
+  'Team Elektros',
+  'Tribe Gaming',
+  'Vatic',
+  'Win Or Die',
+  'ZOOS Esports',
+]
 
 type Page = 'overview' | 'combos' | 'teams' | 'players' | 'matches' | 'data'
 
@@ -373,6 +423,8 @@ export default function Home() {
   const [matchFilter, setMatchFilter] = useState('all')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
+  // Selected tournament preset keys (multi-select: can pick Jun Qualifier + Jul Qualifier etc.)
+  const [selectedPresets, setSelectedPresets] = useState<string[]>([])
   const [uploading, setUploading] = useState(false)
   const [query, setQuery] = useState('')
   const [predictorMinSample, setPredictorMinSample] = useState(DEFAULT_MIN_SAMPLE)
@@ -384,13 +436,28 @@ export default function Home() {
   const [armyBaseMinSample, setArmyBaseMinSample] = useState(3)
   // Min attacks to show a cell in the heatmap (cells with fewer attacks are hidden as noise)
   const [heatmapMin, setHeatmapMin] = useState(2)
-  // Which teams count as "top" — user can type names from the selector
-  const [topTeamsList, setTopTeamsList] = useState<string[]>([])
 
   async function loadData() {
     setLoading(true)
-    const { data, error } = await supabase.from('attacks').select('*').order('date', { ascending: false }).limit(20000)
-    if (!error && data) setRows(data)
+    // Supabase returns at most 1000 rows per request by default (configurable via PGRST_DB_MAX_ROWS
+    // but not controllable from the client). We paginate until we get all rows so no data is lost
+    // regardless of how large the dataset grows.
+    const PAGE = 1000
+    let allRows: any[] = []
+    let from = 0
+    while (true) {
+      const { data, error } = await supabase
+        .from('attacks')
+        .select('*')
+        .order('id', { ascending: true })
+        .range(from, from + PAGE - 1)
+      if (error) { console.error('Supabase load error:', error); break }
+      if (!data || data.length === 0) break
+      allRows = allRows.concat(data)
+      if (data.length < PAGE) break   // last page
+      from += PAGE
+    }
+    setRows(allRows)
     setLoading(false)
   }
 
@@ -434,31 +501,37 @@ export default function Home() {
     const okMatch = matchFilter === 'all' || r.match_id === matchFilter || r.link === matchFilter
     const okFrom = !dateFrom || (r.date || '') >= dateFrom
     const okTo = !dateTo || (r.date || '') <= dateTo
+    // If tournament presets are selected, the row must fall within at least one preset range
+    // (in addition to the manual date range — both apply if both are set).
+    const okPreset = selectedPresets.length === 0 || selectedPresets.some(label => {
+      const p = TOURNAMENT_PRESETS.find(x => x.label === label)
+      return p ? (r.date || '') >= p.from && (r.date || '') <= p.to : false
+    })
     const q = query.toLowerCase().trim()
     const okQuery = !q || [r.attacker_name, r.attacker_tag, r.attacker_team, r.army, r.defender_name, r.defender_team, r.competition, r.match_id].join(' ').toLowerCase().includes(q)
-    return okBase && okSpell && okTeam && okPlayer && okMatch && okFrom && okTo && okQuery
-  }), [cleanRows, baseFilter, spellFilter, teamFilter, playerFilter, matchFilter, dateFrom, dateTo, query])
+    return okBase && okSpell && okTeam && okPlayer && okMatch && okFrom && okTo && okPreset && okQuery
+  }), [cleanRows, baseFilter, spellFilter, teamFilter, playerFilter, matchFilter, dateFrom, dateTo, query, selectedPresets])
 
   const total = filtered.length
 
   // Top-teams filter: when enabled, restrict offensive analysis to attacks made by teams in
-  // topTeamsList only — useful when you want meta stats that exclude low-level opponents whose
+  // TOP_TEAMS only — useful when you want meta stats that exclude low-level opponents whose
   // attack patterns would distort the picture of what top-level play looks like.
-  const topTeamsSet = useMemo(() => new Set(topTeamsList.map(t => t.toLowerCase())), [topTeamsList])
+  const topTeamsSet = useMemo(() => new Set(TOP_TEAMS.map(t => t.toLowerCase())), [])
   const filteredByTopTeams = useMemo(() => {
-    if (!topTeamsOnly || topTeamsList.length === 0) return filtered
+    if (!topTeamsOnly || TOP_TEAMS.length === 0) return filtered
     return filtered.filter(r => topTeamsSet.has((r.attacker_team || '').toLowerCase()))
-  }, [filtered, topTeamsOnly, topTeamsList, topTeamsSet])
+  }, [filtered, topTeamsOnly, topTeamsSet])
 
   // Role isolation: when a team/player is selected, every "general" stat must come from attacks
   // THEY made, never attacks made against them (this was the reported critical bug — fixed here
   // by always deriving general stats from analysisRows, not from `filtered`).
   const analysisRows = useMemo(() => {
-    const base = topTeamsOnly && topTeamsList.length > 0 ? filteredByTopTeams : filtered
+    const base = topTeamsOnly && TOP_TEAMS.length > 0 ? filteredByTopTeams : filtered
     if (teamFilter !== 'all') return filtered.filter((r) => r.attacker_team === teamFilter)
     if (playerFilter !== 'all') return filtered.filter((r) => r.attacker_name === playerFilter)
     return base
-  }, [filtered, filteredByTopTeams, teamFilter, playerFilter, topTeamsOnly, topTeamsList])
+  }, [filtered, filteredByTopTeams, teamFilter, playerFilter, topTeamsOnly])
 
   const analysisTotal = analysisRows.length
   const triples = analysisRows.filter((r) => Number(r.stars) === 3).length
@@ -736,7 +809,7 @@ export default function Home() {
   }
 
   function clearFilters() {
-    setBaseFilter('all'); setSpellFilter('all'); setTeamFilter('all'); setPlayerFilter('all'); setMatchFilter('all'); setDateFrom(''); setDateTo(''); setQuery('')
+    setBaseFilter('all'); setSpellFilter('all'); setTeamFilter('all'); setPlayerFilter('all'); setMatchFilter('all'); setDateFrom(''); setDateTo(''); setQuery(''); setSelectedPresets([])
   }
 
   const rankingHRExp = useExpandable(rankingHR.length)
@@ -811,6 +884,49 @@ export default function Home() {
             <input type="date" className="input" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
             <button className="btn-ghost" onClick={clearFilters}>Clear filters</button>
           </div>
+
+          {/* Tournament stage quick-filter pills */}
+          <div className="mt-3">
+            <p className="label-eyebrow mb-2">Quick filter by tournament stage</p>
+            <div className="flex flex-wrap gap-1.5">
+              {/* Group label helpers */}
+              {(['qualifier', 'final', 'lcq'] as const).map(type => {
+                const presets = TOURNAMENT_PRESETS.filter(p => p.type === type)
+                return (
+                  <div key={type} className="flex flex-wrap gap-1.5">
+                    {type === 'qualifier' && <span className="flex items-center font-mono text-[10px] text-steel pr-1">Qualifier:</span>}
+                    {type === 'final' && <span className="flex items-center font-mono text-[10px] text-steel pr-1 ml-2">Final:</span>}
+                    {type === 'lcq' && <span className="flex items-center font-mono text-[10px] text-steel pr-1 ml-2">LCQ:</span>}
+                    {presets.map(p => {
+                      const active = selectedPresets.includes(p.label)
+                      return (
+                        <button
+                          key={p.label}
+                          onClick={() => setSelectedPresets(prev =>
+                            prev.includes(p.label) ? prev.filter(x => x !== p.label) : [...prev, p.label]
+                          )}
+                          className={`rounded-md border px-2.5 py-1 font-mono text-[11px] font-semibold transition ${active ? PRESET_STYLE[type].replace('hover:', '') : PRESET_STYLE[type]}`}
+                        >
+                          {p.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )
+              })}
+              {selectedPresets.length > 0 && (
+                <button onClick={() => setSelectedPresets([])} className="ml-2 font-mono text-[11px] text-steel underline hover:text-ink">
+                  clear stages
+                </button>
+              )}
+            </div>
+            {selectedPresets.length > 0 && (
+              <p className="mt-1.5 font-mono text-[10px] text-steel">
+                {selectedPresets.join(' + ')} · {total} rows match
+              </p>
+            )}
+          </div>
+
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
             <p className="font-mono text-[11px] text-steel">Available range: {dateBounds.min || '—'} → {dateBounds.max || '—'}</p>
             {teamFilter !== 'all' && (
@@ -840,22 +956,10 @@ export default function Home() {
               sub="Restrict offense stats to selected top teams"
             />
             {topTeamsOnly && (
-              <div className="flex flex-1 flex-col gap-2 min-w-[220px]">
-                <p className="label-eyebrow">Select top teams</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {teams.map(t => (
-                    <button
-                      key={t}
-                      onClick={() => setTopTeamsList(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t])}
-                      className={`rounded-md px-2.5 py-1 font-mono text-[11px] font-semibold transition ${topTeamsList.includes(t) ? 'bg-cyan text-[#0A0C12]' : 'border border-line bg-panel text-steel hover:border-cyan/40 hover:text-ink'}`}
-                    >
-                      {t}
-                    </button>
-                  ))}
-                </div>
-                {topTeamsList.length > 0 && (
-                  <p className="font-mono text-[10px] text-steel">{topTeamsList.length} team{topTeamsList.length > 1 ? 's' : ''} selected · {analysisTotal} attacks in scope</p>
-                )}
+              <div className="flex flex-1 flex-col gap-1 min-w-[220px]">
+                <p className="label-eyebrow">Top teams active</p>
+                <p className="font-mono text-[10px] text-steel">{TOP_TEAMS.join(' · ')}</p>
+                <p className="font-mono text-[10px] text-cyan">{analysisTotal} attacks in scope</p>
               </div>
             )}
           </div>
@@ -1112,13 +1216,6 @@ export default function Home() {
               <p className="mt-4 flex items-center gap-1.5 font-mono text-[11px] text-steel">
                 <AlertTriangle className="h-3 w-3" /> Low sample sizes (small n) are less statistically reliable — check n= before drawing conclusions.
               </p>
-            </section>
-            <section className="grid gap-6 lg:grid-cols-2">
-              <ChartCard title="HR vs. Sample Size" subtitle="Spot combos with a high HR but an unreliable (low) sample. Includes all combos." data={combos} yKey="hr" xKey="attacks" xName="Attacks" scatter color="#0EC6E0" theme={theme} />
-              <div>
-                <ChartCard title="Lowest Average Stars Conceded" subtitle={`Lower average stars usually indicates better defensive value. Minimum ${predictorMinSample} attacks.`} data={rankingStars.slice(0, rankingStarsExp.count)} yKey="combo" xKey="avg_stars" xName="Avg Stars" color="#6B7488" theme={theme} />
-                <ShowMoreControl visibleCount={rankingStarsExp.count} total={rankingStars.length} onExpand={rankingStarsExp.expand} />
-              </div>
             </section>
             <section className="card p-5">
               <SectionLabel sub="Which base styles each attack type (ground/air) struggles most against, by hit rate.">Ground vs Air — by Base Style</SectionLabel>
